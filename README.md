@@ -4,6 +4,10 @@
 你可以直接运行配套 Qt 界面，也可以通过 Python 接口将采集与匹配功能接入自己的软件。
 本文件包含开发包的运行、配置、接口、框架流程及扩展说明，无需其他说明文档。
 
+<!-- PACKAGE_BUILD_INFO -->
+
+开发包版本和打包时间以本文件顶部及 `package-info.json` 为准；`package-manifest.json` 记录文件摘要。
+
 ## 1. 开发包与运行环境
 
 开发包采用 `control / model / view` 分层结构，由可编辑的上层 Python 文件和编译后的底层模块组成。
@@ -17,6 +21,7 @@
 ├─ app_bootstrap.py              运行目录准备
 ├─ acquisition_api.py            Python 接口及命令行入口
 ├─ deployment_check.py           环境与配置自检
+├─ package-info.json             打包版本和时间
 ├─ view/qt/                      界面、主题、点云展示源码
 ├─ control/                      上层编排源码及核心进程扩展模块
 ├─ model/                        底层扩展模块

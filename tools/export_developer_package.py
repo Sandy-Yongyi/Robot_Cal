@@ -4,6 +4,7 @@ Does not compile, delete, or modify model source. Missing any binary fails befor
 """
 
 import argparse
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 from pathlib import Path
@@ -61,6 +62,16 @@ def export_package(binary_dir, output_dir, root=ROOT):
         destination = output_dir / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, destination)
+    built = datetime.now(timezone(timedelta(hours=8)))
+    info = {"package_version": built.strftime("%Y%m%d.%H%M%S.%f"),
+            "built_at": built.strftime("%Y-%m-%d %H:%M:%S UTC+08:00")}
+    (output_dir / 'package-info.json').write_text(json.dumps(info, ensure_ascii=False, indent=2), encoding='utf-8')
+    readme = output_dir / 'README.md'
+    content = readme.read_text(encoding='utf-8-sig')
+    marker = '<!-- PACKAGE_BUILD_INFO -->'
+    if marker not in content:
+        raise ValueError('README is missing the package build information marker')
+    readme.write_text(content.replace(marker, f"打包时间：{info['built_at']}  \n打包版本：`{info['package_version']}`", 1), encoding='utf-8')
     manifest = {str(p.relative_to(output_dir)).replace('\\', '/'): hashlib.sha256(p.read_bytes()).hexdigest()
                 for p in sorted(output_dir.rglob('*')) if p.is_file()}
     (output_dir / 'package-manifest.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding='utf-8')

@@ -16,6 +16,6 @@ setup(
     python_requires='>=3.11',
     packages=find_packages(include=['control', 'control.*', 'model', 'model.*', 'view', 'view.*']),
     package_data={'model.tomls': ['*.toml']},
-    ext_modules=cythonize(extensions, language_level=3, build_dir='build/cython'),
+    ext_modules=cythonize(extensions, language_level=3, build_dir='build/cython', force=True),
     zip_safe=False,
 )

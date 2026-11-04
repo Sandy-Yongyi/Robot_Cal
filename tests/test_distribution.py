@@ -1,4 +1,6 @@
 import tempfile
+import json
+import re
 import unittest
 from pathlib import Path
 
@@ -30,4 +32,9 @@ class DistributionTests(unittest.TestCase):
             self.assertFalse(list(output.rglob('*.c')))
             self.assertFalse(list(output.rglob('*.pdb')))
             self.assertTrue((output / 'package-manifest.json').exists())
+            info = json.loads((output / 'package-info.json').read_text(encoding='utf-8'))
+            self.assertRegex(info['built_at'], r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC\+08:00$')
+            self.assertIn(info['built_at'], (output / 'README.md').read_text(encoding='utf-8'))
+            self.assertIn(info['package_version'], (output / 'README.md').read_text(encoding='utf-8'))
+            self.assertIn('package-info.json', json.loads((output / 'package-manifest.json').read_text(encoding='utf-8'))) 
             self.assertEqual([p.relative_to(output).as_posix() for p in output.rglob('*.md')], ['README.md'])
