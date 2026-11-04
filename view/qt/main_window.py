@@ -1,17 +1,31 @@
 from __future__ import annotations
 
-from PyQt6.QtCore import QTimer, Qt
+from PyQt6.QtCore import QThread, QTimer, Qt, pyqtSignal
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMainWindow, QScrollArea, QStackedWidget, QVBoxLayout, QWidget
 
 from control.UiState import UiState
-from view.qt.pages import AcquisitionPage, DeviceConfigurationPage, RealtimeControlPage, RuntimeLogPage, TaskPage
+from view.qt.pages import RealtimeControlPage
 from view.qt.theme import CYAN, MUTED, build_industrial_stylesheet, ui_px
 from view.qt.auth import authorize
 
 
+class _StartupThread(QThread):
+    failed = pyqtSignal(str)
+
+    def __init__(self, controller, parent=None):
+        super().__init__(parent)
+        self.controller = controller
+
+    def run(self):
+        try:
+            self.controller.start()
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
 class IndustrialMainWindow(QMainWindow):
-    ROUTES = ("realtime", "acquisition", "tasks", "configuration", "logs")
-    ROUTE_LABELS = ("实时控制", "点云采集", "喷涂任务", "设备配置", "运行记录")
+    ROUTES = ("realtime",)
+    ROUTE_LABELS = ("实时控制",)
 
     def __init__(self, controller, bridge=None, parent=None):
         super().__init__(parent)
@@ -19,6 +33,8 @@ class IndustrialMainWindow(QMainWindow):
         self.bridge = bridge
         self._last_state = UiState.empty(getattr(controller, "strategy_name", "complete_workpiece"))
         self._close_pending = False
+        self._stop_pending = False
+        self._starter = None
         self._close_authorized = False
         self.setWindowTitle("JOIHEY · 智能喷涂控制中心")
         control_type = getattr(controller, "control_type", 2)
@@ -27,6 +43,8 @@ class IndustrialMainWindow(QMainWindow):
         self.setMinimumSize(1200, 760)
         self.setStyleSheet(build_industrial_stylesheet())
         self._build_ui()
+        self.realtime_page.start_action = self._start_acquisition
+        self.realtime_page.stop_action = self._stop_acquisition
         if bridge is not None and hasattr(bridge, "state_changed"):
             bridge.state_changed.connect(self.apply_state)
         if bridge is not None and hasattr(bridge, "error_raised"):
@@ -72,11 +90,7 @@ class IndustrialMainWindow(QMainWindow):
 
         self.workspace = QStackedWidget()
         self.realtime_page = RealtimeControlPage(self.controller)
-        self.acquisition_page = AcquisitionPage(self.controller)
-        self.tasks_page = TaskPage()
-        self.configuration_page = DeviceConfigurationPage(self.controller)
-        self.logs_page = RuntimeLogPage()
-        for page in (self.realtime_page, self.acquisition_page, self.tasks_page, self.configuration_page, self.logs_page):
+        for page in (self.realtime_page,):
             self.workspace.addWidget(page)
         content.addWidget(self.workspace, 1)
         layout.addLayout(content, 1)
@@ -102,11 +116,18 @@ class IndustrialMainWindow(QMainWindow):
             self.system_status.setText("● 系统待机")
             self.system_status.setStyleSheet(f"color: {MUTED};")
         self.realtime_page.apply_state(state)
-        self.acquisition_page.apply_state(state)
-        self.tasks_page.apply_state(state)
-        self.configuration_page.apply_state(state)
-        self.logs_page.apply_state(state)
-        if self._close_pending and not state.running and not state.stopping:
+        if self._starter is not None or self._close_pending or self._stop_pending:
+            self.realtime_page.start_button.setEnabled(False)
+        if self._stop_pending:
+            self.realtime_page.stop_button.setEnabled(False)
+        if state.match_status == 'matched':
+            self.realtime_page.task_name.setText(f'匹配序号：{state.matched_id}')
+            self.realtime_page.task_stage.setText(f'第 {state.workpiece_index} 件 · {state.task.stage}')
+        elif state.match_status == 'unmatched':
+            self.realtime_page.task_name.setText('未匹配到唯一序号')
+        elif state.match_status == 'error':
+            self.realtime_page.task_name.setText('匹配异常')
+        if self._close_pending and self._starter is None and not state.running and not state.stopping:
             QTimer.singleShot(0, self.close)
 
     def _set_alarm_text(self, text: str) -> None:
@@ -118,25 +139,68 @@ class IndustrialMainWindow(QMainWindow):
         lines = tuple(self._last_state.alarms) + (f"{title}：{detail}",)
         self._set_alarm_text("\n".join(dict.fromkeys(lines)))
 
+    def _start_acquisition(self):
+        if self._starter is not None or self.controller.running or self.controller.stopping:
+            return
+        if not authorize(self, self.controller):
+            return
+        self.realtime_page.start_button.setEnabled(False)
+        self._starter = _StartupThread(self.controller, self)
+        self._starter.failed.connect(lambda message: self._show_bridge_error('启动失败', message))
+        self._starter.finished.connect(self._startup_finished)
+        self._starter.start()
+
+    def _startup_finished(self):
+        starter, self._starter = self._starter, None
+        stop_pending, self._stop_pending = self._stop_pending, False
+        if starter is not None:
+            starter.deleteLater()
+        self.apply_state(self.controller.build_ui_state())
+        if self._close_pending:
+            self.close()
+        elif stop_pending:
+            self._stop_acquisition()
+
+    def _stop_acquisition(self):
+        if not authorize(self, self.controller):
+            return
+        if self._starter is not None:
+            self._stop_pending = True
+            self.realtime_page.start_button.setEnabled(False)
+            self.realtime_page.stop_button.setEnabled(False)
+            self.system_status.setText('● 等待启动结束后停止采集')
+            return
+        try:
+            self.controller.stop()
+            self.apply_state(self.controller.build_ui_state())
+        except Exception as exc:
+            self._show_bridge_error('停止失败', str(exc))
+
     def closeEvent(self, event) -> None:
+        if self._starter is not None:
+            self._close_pending = True
+            self.realtime_page.start_button.setEnabled(False)
+            self.system_status.setText('● 等待启动结束后释放设备连接')
+            event.ignore()
+            return
         if not self._close_authorized:
             if not authorize(self, self.controller):
                 event.ignore()
                 return
             self._close_authorized = True
-        state = self._last_state
+        state = self.controller.build_ui_state()
         if state.running or state.stopping:
             event.ignore()
             if not self._close_pending:
                 self._close_pending = True
                 self.system_status.setText("● 正在安全停止，完成后关闭窗口")
-                if state.running:
-                    try:
-                        self.controller.stop()
-                    except Exception as exc:
-                        self._close_pending = False
-                        self._close_authorized = False
-                        self.system_status.setText(f"● 停止失败：{exc}")
+            if state.running and not state.stopping:
+                try:
+                    self.controller.stop()
+                except Exception as exc:
+                    self._close_pending = False
+                    self._close_authorized = False
+                    self.system_status.setText(f"● 停止失败：{exc}")
             return
         if self.bridge is not None:
             self.bridge.stop()

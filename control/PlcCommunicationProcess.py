@@ -1,29 +1,17 @@
-﻿import os
+import os
 import sys
-import time
-import copy
 import math
-import queue
+import time
 import multiprocessing
 from typing import Any, cast
 from model.utils.LoggerUtil import check_and_rotate_log, logger
 from model.plc.PlcCommon import PlcManager
 from model.utils.TomlLoader import TomlLoader
 from model.plc.MovingFrameData import ReceiveMovingFrameData, SendMovingFrameData
-from model.utils.FrameQueueManager import FrameQueueManager
-from model.formats.complete_workpiece.BlockDataFormat import BlockData
-from model.formats.frame_by_frame.AxisFrameDataFormat import AxisFrameData
-from model.dataprocess.complete_workpiece.GunDistributor import GunDistributor
-from model.motionplan.MotionFrameByFramePlanning import MotionFrameByFramePlanning
 from model.utils.StrategyUtil import is_complete_workpiece_mode, is_continuous_bidirectional_mode, validate_strategy_name
-from model.utils.MachineConfigUtil import MACHINE_OFFSET_KEYS, get_machine_config_path, normalize_machine_config_offsets, normalize_machine_offset_values
-from model.motionplan.MotionCompleteWorkpiecePlanning import MotionCompleteWorkpiecePlanning
+from model.utils.MachineConfigUtil import get_machine_config_path, normalize_machine_config_offsets
 from model.utils.ProcessHeartbeat import ProcessHeartbeat
 from model.utils.UiTelemetry import UiStatusPublisher
-from model.utils.UiTaskFeedback import build_task_feedback
-from control.UiState import TaskState
-from model.motionplan.ContinuousLidarScan import ContinuousLidarScan
-from model.motionplan.MotionContinuousBidirectionalPlanning import MotionContinuousBidirectionalPlanning
 
 
 class SimulatedPlcData:
@@ -65,10 +53,10 @@ class PlcCommunicationProcess(multiprocessing.Process):
         self.machine_config = cast(dict[str, Any], {})
         self.runtime_spray_config = cast(dict[str, Any], {})
         self.mode_config = cast(dict[str, Any], {})
-        self.frame_by_frame_motion_planner = cast(MotionFrameByFramePlanning, None)
-        self.complete_workpiece_planner = cast(MotionCompleteWorkpiecePlanning, None)
-        self.frame_queue_manager = cast(FrameQueueManager, None)
-        self.gun_distributor = cast(GunDistributor, None)
+        pass  # 已删除的运动对象不再构造。
+        pass  # 已删除的运动对象不再构造。
+        pass  # 已删除的运动对象不再构造。
+        pass  # 已删除的运动对象不再构造。
 
         self.max_fifo = 0
         self.max_retries = 3
@@ -214,8 +202,6 @@ class PlcCommunicationProcess(multiprocessing.Process):
         self.machine_config = normalize_machine_config_offsets(TomlLoader.load(self.machine_config_path))
         if is_continuous_bidirectional_mode(self.strategy_name):
             self.runtime_spray_config = TomlLoader.load(self.spray_config_path)
-            self.continuous_scan = ContinuousLidarScan(self.read_data_config, self.runtime_spray_config)
-            self.continuous_bidirectional_planner = MotionContinuousBidirectionalPlanning()
             self.frame_queue_manager = self._create_frame_queue_manager()
             self._initialize_device_runtime_state(return_to_safe=True)
             self.continuous_scan_pending = False
@@ -225,9 +211,6 @@ class PlcCommunicationProcess(multiprocessing.Process):
             return
         self.runtime_spray_config = TomlLoader.load(self.spray_config_path)
         self.mode_config = TomlLoader.load(self.mode_config_path)
-        self.frame_by_frame_motion_planner = MotionFrameByFramePlanning()
-        self.complete_workpiece_planner = MotionCompleteWorkpiecePlanning()
-        self.gun_distributor = GunDistributor(machine_cfg=self.machine_config)
         spray_mode = int(self.mode_config.get("spray_mode", 0) or 0)
         mode_text = "手动模式" if spray_mode == 1 else "自动模式"
         logger.info(f"PLC runtime spray mode: {mode_text} (spray_mode={spray_mode})")
@@ -254,21 +237,7 @@ class PlcCommunicationProcess(multiprocessing.Process):
         self._initialize_device_runtime_state(return_to_safe=False)
 
     def _initialize_device_runtime_state(self, return_to_safe: bool):
-        """Initialize configured spray devices for every motion strategy."""
-        self.runtime_machine_config = {}
-        for sn_str, cfg in self.machine_config.items():
-            sn = int(sn_str)
-            self.runtime_machine_config[sn] = self._build_runtime_machine_config(cfg)
-            runtime_offsets = {
-                key: self.runtime_machine_config[sn][key]
-                for key in MACHINE_OFFSET_KEYS
-                if key in self.runtime_machine_config[sn]
-            }
-            logger.info(f"SN[{sn}] runtime offsets initialized: {runtime_offsets}")
-        self.num_devices = max(int(k) for k in self.machine_config) + 1 if self.machine_config else 0
-        self.device_origin_complete = {sn: not return_to_safe for sn in range(self.num_devices)}
-        self.device_returning_to_origin = {sn: return_to_safe for sn in range(self.num_devices)}
-        self.last_operate_state = 0
+        pass  # 运动、停用策略或已删除模块的入口保留。
 
     def _build_runtime_machine_config(self, cfg: dict) -> dict:
         runtime_cfg = {}
@@ -281,40 +250,8 @@ class PlcCommunicationProcess(multiprocessing.Process):
             runtime_cfg["flat"] = {key: value for key, value in flat_cfg.items() if key in self.runtime_param_keys}
         return runtime_cfg
 
-    def _create_frame_queue_manager(self) -> FrameQueueManager:
-        """根据当前喷涂策略创建对应参数的 FrameQueueManager。"""
-        stack_size = int(self.read_data_config.get(f"{self.strategy_name}_queue_size", 1500))
-        y_min = int(self.read_data_config.get("combined_y_min", 1100))
-        y_max = int(self.read_data_config.get("combined_y_max", 3800))
-        y_threshold = int(self.read_data_config.get("y_threshold", 10))
-        x_min = int(self.read_data_config.get("combined_x_min", 0))
-        x_max = int(self.read_data_config.get("combined_x_max", 900))
-        x_threshold = int(self.read_data_config.get("x_threshold", 10))
-
-        logger.info(
-            "Create FrameQueueManager with strategy=%s, stack_size=%s, y=[%s,%s,%s], x=[%s,%s,%s]",
-            self.strategy_name,
-            stack_size,
-            y_min,
-            y_max,
-            y_threshold,
-            x_min,
-            x_max,
-            x_threshold,
-        )
-
-        return FrameQueueManager(
-            system_config_path=self.system_config_path,
-            stack_size=stack_size,
-            y_min=y_min,
-            y_max=y_max,
-            y_threshold=y_threshold,
-            x_min=x_min,
-            x_max=x_max,
-            x_threshold=x_threshold,
-            strategy_name=self.strategy_name,
-            machine_config=self.machine_config,
-        )
+    def _create_frame_queue_manager(self):
+        pass  # 运动、停用策略或已删除模块的入口保留。
 
     def _initialize_connection(self):
         """初始化PLC连接"""
@@ -358,16 +295,6 @@ class PlcCommunicationProcess(multiprocessing.Process):
             self._update_enable_value()
             check_and_rotate_log()
             # 处理数据发送，发送给PLC
-            moving_frame = self._axis_to_moving_frame()  # 按当前模式转换为运动帧数据
-            if not self.simulation_mode:
-                # logger.info(f"PLC Operate=0b{int(self.plc_data.Operate):016b}")
-                logger.debug(f"moving now send moving_frame {moving_frame}")
-                try:
-                    self.plc.send_frame(moving_frame)
-                except OSError:
-                    if is_continuous_bidirectional_mode(self.strategy_name):
-                        self.pulse_queue.put({"pulse": -999, "fifo": 0, "status": "stopped"})
-                    raise
             if is_continuous_bidirectional_mode(self.strategy_name):
                 self._publish_continuous_scan_state()
 
@@ -418,7 +345,6 @@ class PlcCommunicationProcess(multiprocessing.Process):
 
         except (ConnectionResetError, BrokenPipeError, OSError) as e:
             if is_continuous_bidirectional_mode(self.strategy_name):
-                self.continuous_scan._fault("PLC communication lost; current scan discarded.")
                 self.pulse_queue.put({"pulse": -999, "fifo": 0, "status": "stopped"})
             # 处理连接异常
             if not self.simulation_mode:
@@ -436,24 +362,7 @@ class PlcCommunicationProcess(multiprocessing.Process):
             return False
 
     def _publish_ui_status(self, connected: bool, force: bool = False):
-        publisher = getattr(self, "ui_status", None)
-        if publisher is None or not publisher.is_due(force):
-            return
-        data = getattr(self, "plc_data", None)
-        try:
-            task = build_task_feedback(self) if connected else TaskState(stage="等待 PLC 通讯恢复")
-        except Exception:
-            # Optional display feedback must not interrupt the control cycle.
-            task = TaskState(stage="分枪计划暂不可用")
-        publisher.publish(
-            force=force, connected=connected and not self.simulation_mode,
-            simulated=self.simulation_mode,
-            task=task,
-            pulse=int(getattr(data, "ChainPulse", 0) or 0),
-            motion=(getattr(self.continuous_scan, "motion_status", "stopped")
-                    if is_continuous_bidirectional_mode(self.strategy_name) and hasattr(self, "continuous_scan")
-                    else self.chain_motion_status),
-        )
+        pass  # 运动、停用策略或已删除模块的入口保留。
 
     def _advance_simulated_pulse(self, current_pulse, pulse_step):
         """仿真脉冲：递增到 max_pulse 时重置为 0。"""
@@ -515,34 +424,7 @@ class PlcCommunicationProcess(multiprocessing.Process):
         return int(getattr(self, "lidar_status", 0) or 0) in (1, 2, 3)
 
     def _process_frame_data(self):
-        """frame_by_frame / continuous_bidirectional 模式处理激光采集队列。"""
-        try:
-            while not self.raw_data_queue.empty():
-                fifo_data = self.raw_data_queue.get_nowait()
-                if not isinstance(fifo_data, dict):
-                    continue
-                self._update_lidar_status_from_packet(fifo_data)
-                if self._should_skip_raw_packet():
-                    continue
-                if self._should_drop_reconnect_raw_packet(fifo_data):
-                    continue
-                if bool(fifo_data.get("reset_queue", False)):
-                    self._clear_all_frame_queues()
-
-                repeat_count = int(fifo_data.get("repeat_count", 1) or 1)
-                frame_packet_received = False
-                for direction in self.frame_queue_manager.active_directions:
-                    frame = fifo_data.get(direction)
-                    if not isinstance(frame, AxisFrameData):
-                        continue
-                    self.frame_queue_manager.push_frame(direction, frame, repeat_count=repeat_count)
-                    frame_packet_received = True
-                    if direction == "left":
-                        logger.debug(f"get raw_data_queue fifo is {fifo_data.get('fifo', 1)}")
-                if frame_packet_received:
-                    self._handle_frame_packet_received(fifo_data, repeat_count)
-        except Exception as e:
-            logger.error(f"Error processing raw data from queue: {e}")
+        pass  # 运动、停用策略或已删除模块的入口保留。
 
     def _should_drop_reconnect_raw_packet(self, fifo_data: dict) -> bool:
         """重连补空后丢弃不晚于同步基准的旧包，避免队列被再次推进。"""
@@ -561,247 +443,34 @@ class PlcCommunicationProcess(multiprocessing.Process):
         return False
 
     def _process_continuous_scan_cycle(self):
-        """处理第三种模式的采数状态和整趟点云；运动帧由统一规划入口生成。"""
-        while True:
-            try:
-                packet = self.raw_data_queue.get_nowait()
-            except queue.Empty:
-                break
-            if not isinstance(packet, dict):
-                continue
-            if "lidar_status" in packet:
-                self.lidar_status = int(packet["lidar_status"])
-                self.continuous_lidar_ready = True
-                # 遮挡和设备严重异常锁存；断线允许恢复后反向重采。
-                if self.lidar_status in (1, 2):
-                    self.continuous_scan._fault(f"Lidar acquisition fault: status={self.lidar_status}")
-                elif self.lidar_status == 3:
-                    self.continuous_scan.request_retry()
-                if packet.get("reset_queue"):
-                    if self.continuous_scan.stage == "retry_wait":
-                        self.continuous_scan.retry_acknowledged = True
-                    else:
-                        self.continuous_scan.request_retry()
-            if "all_data" in packet or any(key.endswith("_data") for key in packet):
-                if self.continuous_scan.stage == "fault":
-                    continue
-                if not self.continuous_scan_pending or self.continuous_scan.stage != "complete":
-                    self.continuous_scan._fault("Received complete point cloud in an unexpected scan stage.")
-                    continue
-                try:
-                    stored = self.frame_queue_manager.put_continuous_workpiece(packet, int(self.plc_data.Status))
-                except ValueError as exc:
-                    self.continuous_scan._fault(str(exc))
-                    continue
-                if not stored:
-                    self.continuous_scan._fault("Laser station is occupied; refusing to overwrite point cloud.")
-                    continue
-                self.continuous_scan_pending = False
-        if self.lidar_status in (1, 2):
-            self.continuous_scan._fault(f"Lidar acquisition fault: status={self.lidar_status}")
+        pass  # 运动、停用策略或已删除模块的入口保留。
 
     def _publish_continuous_scan_state(self):
-        """运动帧发送后向采数进程发布合成脉冲、FIFO和扫描状态。"""
-        error = self.continuous_scan.error
-        if error and error != self.continuous_reported_error:
-            self.continuous_reported_error = error
-            logger.error(error)
-            print(f"Lidar scan fault: {error}; resolve the fault and restart the software.")
-        pulse = self.continuous_scan.pulse
-        self.pulse_queue.put({"pulse": pulse, "fifo": self._pulse_to_chaincountcm(pulse), "status": self.continuous_scan.motion_status})
+        pass  # 运动、停用策略或已删除模块的入口保留。
 
     def _process_workpiece_data(self):
-        """complete_workpiece 模式处理整件数据队列。"""
-        source_queue = self.machine_data_queue or self.raw_data_queue
-        try:
-            while not source_queue.empty():
-                machine_data = source_queue.get_nowait()
-                if not isinstance(machine_data, dict):
-                    continue
-
-                if "lidar_status" in machine_data:
-                    self._update_lidar_status(int(machine_data.get("lidar_status", 0) or 0))
-                if self._should_skip_raw_packet():
-                    continue
-
-                for direction, payload in machine_data.items():
-                    if direction == "lidar_status":
-                        continue
-                    if direction not in self.frame_queue_manager.queues:
-                        continue
-                    if not isinstance(payload, dict):
-                        continue
-
-                    stop_pulse = payload.get("stop_pulse")
-                    # stop_pulse = self.plc_data.ChainPulse  # TODO ：调用数据调试时使用
-                    base_block_data = payload.get("data")
-                    for sn in self.frame_queue_manager.queues[direction].keys():
-                        block_data = self._build_machine_workpiece(base_block_data, sn)
-                        frame_item = {"stop_pulse": stop_pulse, "data": block_data}
-                        logger.info(f"Push complete workpiece data to queue: direction={direction}, sn={sn}, stop_pulse={stop_pulse}, block_data={block_data}")
-                        success, insert_index, shifted = self.frame_queue_manager.push_workpiece(direction=direction, sn=sn, data=frame_item)
-                        if success and insert_index is not None:
-                            self._update_workpiece_tracking_after_push(direction, sn, insert_index, shifted)
-        except Exception as e:
-            logger.error(f"Error processing machine queue: {str(e)}")
+        pass  # 运动、停用策略或已删除模块的入口保留。
 
     def _update_workpiece_tracking_after_push(self, direction: str, sn: int, insert_index: int, shifted: bool):
-        """工件队列入队后同步位置跟踪索引，并让新工件首次从自身stop_pulse开始累计。"""
-        direction_mm_map = self.last_workpiece_chain_mm.setdefault(direction, {})
-        sn_mm_map = direction_mm_map.get(sn, {})
-        if shifted:
-            sn_mm_map = {int(old_idx) - 1: value for old_idx, value in sn_mm_map.items() if int(old_idx) > 0}
-        sn_mm_map.pop(int(insert_index), None)
-        direction_mm_map[sn] = sn_mm_map
-
-        direction_residual_map = self.last_workpiece_chain_mm_residual.setdefault(direction, {})
-        sn_residual_map = direction_residual_map.get(sn, {})
-        if shifted:
-            sn_residual_map = {int(old_idx) - 1: value for old_idx, value in sn_residual_map.items() if int(old_idx) > 0}
-        sn_residual_map.pop(int(insert_index), None)
-        direction_residual_map[sn] = sn_residual_map
+        pass  # 运动、停用策略或已删除模块的入口保留。
 
     def _build_machine_workpiece(self, block_data, sn: int):
-        if not isinstance(block_data, BlockData):
-            return block_data
-
-        machine_cfg = self.machine_config.get(str(sn))
-        if not machine_cfg or self.gun_distributor is None:
-            return copy.deepcopy(block_data)
-
-        machine_block = copy.deepcopy(block_data)
-        return self.gun_distributor.distribute_for_machine(blockdata=machine_block, machine_cfg=machine_cfg, machine_id=int(sn))
+        pass  # 运动、停用策略或已删除模块的入口保留。
 
     def _handle_frame_packet_received(self, fifo_data: dict, repeat_count: int):
-        self.current_cycle_raw_shift_steps += repeat_count
-        was_timeout_active = self.raw_data_timeout_active
-        self._reset_raw_data_timeout_timer(fifo=fifo_data.get("fifo", None))
-        if was_timeout_active:
-            msg = f"激光采样数据已恢复，最新FIFO={self.last_raw_frame_fifo}，超时阈值={self.raw_data_timeout_s}s"
-            print(msg)
-            logger.info(msg)
-            self.raw_data_timeout_active = False
+        pass  # 运动、停用策略或已删除模块的入口保留。
 
     def _push_empty_frames(self, repeat_count: int):
-        """链条在走但没有新激光帧时，补空帧推动队列前进，避免旧数据停在原位。"""
-        if is_complete_workpiece_mode(self.strategy_name):
-            return
-
-        if repeat_count <= 0:
-            return
-
-        for direction in tuple(self.frame_queue_manager.frame_stack.keys()):
-            empty_frame = self.frame_queue_manager.create_empty_frame_x() if direction in ("left_upper", "right_upper") else self.frame_queue_manager.create_empty_frame_y()
-            self.frame_queue_manager.push_frame(direction, empty_frame, repeat_count=repeat_count)
+        pass  # 运动、停用策略或已删除模块的入口保留。
 
     def _sync_frame_queue_with_chain_fifo(self):
-        """以 PLC 当前 FIFO 为准同步 frame_by_frame 帧队列。"""
-
-        if not hasattr(self, "plc_data") or self.plc_data is None:
-            return
-
-        current_fifo = int(getattr(self.plc_data, "ChainCountCM", 0) or 0)
-        if self.last_synced_chain_fifo is None:
-            self.last_synced_chain_fifo = current_fifo
-            return
-
-        fifo_delta = self._get_fifo_step_delta(self.last_synced_chain_fifo, current_fifo)
-        if fifo_delta < 0:
-            logger.warning(f"PLC fifo reversed unexpectedly: last_synced={self.last_synced_chain_fifo}, cur={current_fifo}, reset sync base")
-            self.last_synced_chain_fifo = current_fifo
-            self.current_cycle_raw_shift_steps = 0
-            return
-
-        if fifo_delta > 0:
-            missing_shift = max(0, fifo_delta - self.current_cycle_raw_shift_steps)
-            if missing_shift > 0:
-                elapsed = time.time() - self.last_raw_frame_time
-                if elapsed >= self.raw_data_timeout_s:
-                    self._push_empty_frames(missing_shift)
-                    logger.warning(
-                        f"Chain fifo advanced without enough lidar frames: last_synced={self.last_synced_chain_fifo}, "
-                        f"cur={current_fifo}, fifo_delta={fifo_delta}, raw_shift={self.current_cycle_raw_shift_steps}, "
-                        f"inject_empty_shift={missing_shift}, elapsed={elapsed:.3f}s"
-                    )
-            self.last_synced_chain_fifo = current_fifo
-
-        self.current_cycle_raw_shift_steps = 0
-        self._update_raw_data_watchdog()
+        pass  # 运动、停用策略或已删除模块的入口保留。
 
     def _resync_frame_queue_after_plc_reconnect(self):
-        """PLC 重连后按实际 FIFO 缺口补空帧，保留断线前已有帧的位置关系。"""
-        if not getattr(self, "plc_reconnect_pending", False):
-            return
-
-        current_fifo = int(getattr(self.plc_data, "ChainCountCM", 0) or 0)
-        previous_fifo = self.last_synced_chain_fifo
-        gap = 0 if previous_fifo is None else self._get_fifo_step_delta(previous_fifo, current_fifo)
-        if gap > 0:
-            self._push_empty_frames(gap)
-            logger.warning(
-                f"PLC reconnect fifo gap filled with empty frames: last_synced={previous_fifo}, "
-                f"cur={current_fifo}, gap={gap}"
-            )
-        elif gap < 0:
-            logger.warning(
-                f"PLC reconnect fifo moved backward unexpectedly: last_synced={previous_fifo}, "
-                f"cur={current_fifo}, reset sync base"
-            )
-
-        self.last_synced_chain_fifo = current_fifo
-        self.reconnect_raw_packet_floor_fifo = current_fifo
-        self.current_cycle_raw_shift_steps = 0
-        self.plc_reconnect_pending = False
+        pass  # 运动、停用策略或已删除模块的入口保留。
 
     def _sync_complete_workpiece_positions(self):
-        """完整工件模式下，按链条当前位置持续更新队列内工件的 `fifo_frame_pos`。"""
-        if not hasattr(self, "plc_data") or self.plc_data is None:
-            return
-
-        current_pulse = float(getattr(self.plc_data, "ChainPulse", 0) or 0)
-        current_mm = current_pulse / float(self.pulse_to_mm or 1)
-        step_mm = float(self.workpiece_fifo_step_mm or 5)
-        if step_mm <= 0:
-            step_mm = 5.0
-
-        for direction, sn_queues in self.frame_queue_manager.queues.items():
-            direction_mm_map = self.last_workpiece_chain_mm.setdefault(direction, {})
-            direction_residual_map = self.last_workpiece_chain_mm_residual.setdefault(direction, {})
-            for sn, queue_data in sn_queues.items():
-                prev_mm_map = direction_mm_map.get(sn, {})
-                prev_residual_map = direction_residual_map.get(sn, {})
-                new_mm_map = {}
-                new_residual_map = {}
-
-                for frame_idx, frame_item in enumerate(queue_data):
-                    if not isinstance(frame_item, dict):
-                        continue
-
-                    block_data = frame_item.get("data")
-                    stop_pulse = float(frame_item.get("stop_pulse", 0) or 0)
-                    if not isinstance(block_data, BlockData):
-                        continue
-
-                    prev_mm = prev_mm_map.get(frame_idx)
-                    if prev_mm is None:
-                        stop_mm = stop_pulse / float(self.pulse_to_mm or 1)
-                        delta_mm = self._calc_delta_mm_with_wrap(current_mm, stop_mm)
-                    else:
-                        delta_mm = self._calc_delta_mm_with_wrap(current_mm, prev_mm)
-
-                    residual_mm = float(prev_residual_map.get(frame_idx, 0.0) or 0.0)
-                    accumulated_mm = residual_mm + float(delta_mm)
-                    step_count = int(math.floor(abs(accumulated_mm) / step_mm))
-                    applied_mm = 0
-                    if step_count > 0:
-                        applied_mm = int(math.copysign(step_count * step_mm, accumulated_mm))
-
-                    block_data.fifo_frame_pos = int((block_data.fifo_frame_pos or 0) + applied_mm)
-                    new_mm_map[frame_idx] = current_mm
-                    new_residual_map[frame_idx] = accumulated_mm - applied_mm
-
-                direction_mm_map[sn] = new_mm_map
-                direction_residual_map[sn] = new_residual_map
+        pass  # 运动、停用策略或已删除模块的入口保留。
 
     def _calc_delta_mm_with_wrap(self, current_mm: float, prev_mm: float) -> float:
         delta = float(current_mm) - float(prev_mm)
@@ -812,27 +481,7 @@ class PlcCommunicationProcess(multiprocessing.Process):
         return delta
 
     def _update_raw_data_watchdog(self):
-        """frame_by_frame 模式下，长时间没有收到激光帧时触发停链保护。"""
-
-        chain_running = getattr(self, "chain_motion_status", "stopped") == "moving_forward"
-        if not chain_running:
-            if self.raw_data_timeout_active:
-                msg = "链条已停止，清除激光采样超时保护状态"
-                print(msg)
-                logger.info(msg)
-            self.raw_data_timeout_active = False
-            return
-
-        elapsed = time.time() - self.last_raw_frame_time
-        if elapsed <= self.raw_data_timeout_s:
-            return
-
-        if not self.raw_data_timeout_active:
-            self.raw_data_timeout_active = True
-            self._clear_all_frame_queues()
-            msg = f"链条运行中已有 {elapsed:.3f}s 未收到新的激光帧，已清空帧队列并请求停链保护，最后一次FIFO={self.last_raw_frame_fifo}"
-            print(msg)
-            logger.error(msg)
+        pass  # 运动、停用策略或已删除模块的入口保留。
 
     def _update_lidar_status(self, new_status: int):
         """更新激光状态，并按要求输出节流日志。"""
@@ -865,10 +514,7 @@ class PlcCommunicationProcess(multiprocessing.Process):
             self.last_lidar_status_log_time = 0.0
 
     def _clear_all_frame_queues(self):
-        for direction in self.frame_queue_manager.active_directions:
-            self.frame_queue_manager.clear(direction)
-        self.last_workpiece_chain_mm = {}
-        self.last_workpiece_chain_mm_residual = {}
+        pass  # 运动、停用策略或已删除模块的入口保留。
 
     def _clear_pending_raw_data_queue(self):
         cleared_count = 0
@@ -881,121 +527,19 @@ class PlcCommunicationProcess(multiprocessing.Process):
         return cleared_count
 
     def _update_enable_value(self):
-        try:
-            while not self.control_queue.empty():
-                msg = self.control_queue.get_nowait()
-                logger.info(f"control_queue recv: {msg}")
-                if not isinstance(msg, dict):
-                    logger.warning("control_queue msg is not dict, skipped")
-                    continue
-
-                if "lidar_scan_speed" in msg and is_continuous_bidirectional_mode(self.strategy_name):
-                    self.continuous_scan.set_speed(msg["lidar_scan_speed"])
-                    logger.info(f"Scan and homing speed updated to {self.continuous_scan.speed} mm/s")
-                    continue
-
-                # machine config
-                if "machine" in msg:
-                    machine_msg = msg.get("machine")
-                    if not isinstance(machine_msg, dict):
-                        logger.warning("machine msg is not dict, skipped")
-                        continue
-                    sn = machine_msg.get("sn")
-                    if sn is None:
-                        logger.warning("machine msg without sn, skipped")
-                        continue
-                    config = {k: v for k, v in machine_msg.items() if k != "sn"}
-                    self._handle_config_update(sn=sn, config=config)
-                    continue
-
-                # spray config
-                if "spray" in msg:
-                    spray_cfg = msg.get("spray")
-                    if not isinstance(spray_cfg, dict):
-                        logger.warning("spray msg is not dict, skipped")
-                        continue
-                    self._handle_spray_update(spray_cfg)
-                    continue
-                logger.warning(f"Unknown control message type: {msg}")
-
-        except Exception as e:
-            logger.error(f"deal control queue error: {str(e)}")
+        pass  # 运动、停用策略或已删除模块的入口保留。
 
     def _handle_config_update(self, sn: int, config: dict):
-        config = normalize_machine_offset_values(config, fill_missing=False)
-        sn_key = str(sn)
-        if sn_key in self.machine_config:
-            self.machine_config[sn_key].update(config)
-        else:
-            logger.warning(f"SN[{sn}] not found in machine_config, create one")
-            self.machine_config[sn_key] = {"sn": sn, **config}
-
-        if sn not in self.runtime_machine_config:
-            logger.warning(f"SN[{sn}] not found, create runtime config")
-            self.runtime_machine_config[sn] = {}
-        runtime_cfg = self.runtime_machine_config[sn]
-        for key, value in config.items():
-            if key == "flat" and isinstance(value, dict):
-                flat_runtime_cfg = runtime_cfg.setdefault("flat", {})
-                for flat_key, flat_value in value.items():
-                    if flat_key in self.runtime_param_keys:
-                        flat_runtime_cfg[flat_key] = flat_value
-                continue
-            if key not in self.runtime_param_keys:
-                continue
-            runtime_cfg[key] = value
-        logger.info(f"SN[{sn}] runtime config updated: {runtime_cfg}")
+        pass  # 运动、停用策略或已删除模块的入口保留。
 
     def _handle_spray_update(self, spray_cfg: dict):
-        if not hasattr(self, "runtime_spray_config"):
-            self.runtime_spray_config = {}
-        for key, value in spray_cfg.items():
-            self.runtime_spray_config[key] = value
-        logger.info(f"Spray runtime config updated: {self.runtime_spray_config}")
+        pass  # 运动、停用策略或已删除模块的入口保留。
 
-    def _axis_to_moving_frame(self) -> SendMovingFrameData:
-        if is_continuous_bidirectional_mode(self.strategy_name):
-            return self.continuous_bidirectional_planner.build_moving_frame(self)
-        if is_complete_workpiece_mode(self.strategy_name):
-            return self.complete_workpiece_planner.build_moving_frame(self)
-        return self.frame_by_frame_motion_planner.build_moving_frame(self)
+    def _axis_to_moving_frame(self):
+        pass  # 运动、停用策略或已删除模块的入口保留。
 
     def after_spray_complete(self, direction: str, sn: int):
-        """喷涂完成后删除当前工件，并同步维护 complete_workpiece 的位置跟踪标记。"""
-        ok = self.frame_queue_manager.shift_queue(direction, sn)
-        if not ok:
-            logger.warning(f"shift_queue failed for {direction}, sn={sn}")
-            return
-
-        direction_mm_map = self.last_workpiece_chain_mm.get(direction)
-        if not direction_mm_map:
-            return
-
-        sn_mm_map = direction_mm_map.get(sn)
-        if not sn_mm_map:
-            return
-
-        new_mm_map = {}
-        for old_idx in sorted(sn_mm_map.keys()):
-            if int(old_idx) == 0:
-                continue
-            new_mm_map[int(old_idx) - 1] = sn_mm_map[old_idx]
-        direction_mm_map[sn] = new_mm_map
-
-        direction_residual_map = self.last_workpiece_chain_mm_residual.get(direction)
-        if not direction_residual_map:
-            return
-
-        sn_residual_map = direction_residual_map.get(sn)
-        if not sn_residual_map:
-            return
-
-        new_residual_map = {}
-        for old_idx in sorted(sn_residual_map.keys()):
-            if int(old_idx) == 0:
-                continue
-            new_residual_map[int(old_idx) - 1] = sn_residual_map[old_idx]
-        direction_residual_map[sn] = new_residual_map
+        pass  # 运动、停用策略或已删除模块的入口保留。
 
     def _handle_connection_error(self, plc):
         """处理连接异常，支持初始连接和已连接状态的断开重连"""

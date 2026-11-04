@@ -57,6 +57,10 @@ def save_job(job, pool_descriptor, output_dir, file_format="txt", heartbeat=None
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     suffix = job.get("filename_suffix", job["job_id"])
+    # Acquisition job IDs start with YYYYMMDD_HHMMSS; keep the internal ID intact.
+    timestamp = re.match(r"^(\d{8}_\d{6})(?:_|$)", suffix)
+    if timestamp:
+        suffix = timestamp.group(1)
     for token in (suffix, job["job_id"], *job["channels"]):
         if not re.fullmatch(r"[A-Za-z0-9_-]+", token):
             raise ValueError("Invalid point cloud output name")
@@ -79,7 +83,7 @@ def save_job(job, pool_descriptor, output_dir, file_format="txt", heartbeat=None
                 points = points[np.lexsort((points[:, 0], points[:, 1], points[:, 2]))]
                 minimum, total = 0.0, len(points)
 
-                def chunks():
+                def chunks():  # type: ignore
                     for start in range(0, len(points), 32768):
                         heartbeat.touch()
                         yield points[start:start + 32768].copy()
@@ -179,8 +183,7 @@ class PointCloudSaveProcess(multiprocessing.Process):
                     self.status_queue.put({"type": "drained"})
                     return
                 started = time.perf_counter()
-                preview = save_job(current_job, self.pool_descriptor, self.output_dir, file_format,
-                                   heartbeat, voxel_size)
+                preview = save_job(current_job, self.pool_descriptor, self.output_dir, file_format, heartbeat, voxel_size)  # type: ignore
                 blocks = [block for channel in current_job["channels"].values() for block in channel]
                 self.ack_queue.put({"job_id": current_job["job_id"], "blocks": blocks})
                 elapsed = time.perf_counter() - started

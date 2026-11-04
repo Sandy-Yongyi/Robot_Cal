@@ -115,7 +115,7 @@ py -3.11 -m venv .venv
 - `pulse_to_mm`、`max_pulse` 与现场计数规则一致。
 - 滤波范围、各方向点数阈值、`max_scan_length` 和 `linked_stop_distance_mm` 能正确划分工件。
 - 坐标原点、标定偏移与型号配置中的标准坐标一致。
-- `start_skip_mm` 符合首件处理要求：启动时已处于扫描区的半件可能被跳过。
+- `start_skip_mm` 符合首件处理要求：启动时已处于扫描区的半件跳过分区和匹配，但会保存并显示点云，界面清除之前的匹配序号。
 
 当前 PLC 接收载荷为大端序、**302 字节、48 组轴状态**，帧头为 `02 02 02 02`，帧尾为 `03 03 03 03`。
 
@@ -290,23 +290,24 @@ main.py → qt_main.py
 
 界面显示期间不会自动连接设备。点击启动后，后台启动线程调用控制器，控制器启动工作进程。
 `QtUiBridge` 每 100 ms 收集状态并更新界面。Python 接口通过同一运行时使用设备管线。
-运行时依据 `control_type` 组装进程：方式 1 由 `DataProcessWorker` 读取 TXT 并直接处理，与 PLC 进程并行；方式 2 使用下述实时采数管线；方式 3 只使用 TXT 显示进程。
+运行时依据 `control_type` 组装进程：方式 1 由原版 `DataProcessWorker` 读取 TXT，点云交由处理进程识别，与 PLC 进程并行；方式 2 使用下述实时采数管线；方式 3 只使用 TXT 显示进程。
 
 TXT 和实时数据复用相同处理实现：
 
 ```text
-方式1：TXT → DataProcessWorker → 几何分区 → CabinetTypeRecognizer → 结果/预览
+方式1：TXT → DataProcessWorker → 原始点云队列 → WorkpieceProcessingAdapter → DataProcessingProcess → 结果/预览
 方式2：激光 → 整件点云 → WorkpieceProcessingAdapter → DataProcessingProcess → 结果/预览
 方式3：TXT → PointCloudFileProcess → 仅显示
 ```
 
-`DataProcessWorker` 和实时处理进程通过 `WorkpieceProcessingAdapter` 复用 `DataProcessingProcess` 的整件处理方法，TXT 与实时方式调用相同的 `DataFindBlocks` 和 `CabinetTypeRecognizer`，
-输出相同的 `sequence / identifier / status / message` 结果及配对点云/分区预览。
-TXT 方式不会将已处理的数据再送入一个额外识别进程，避免重复分区或重复识别。
+`DataProcessWorker.py` 保留原版实现，负责读取 TXT、按原点配置组装并输出整件点云。
+运行方式 1 的上层通过 `TxtAcquisitionAdapter` 选择策略 2、管理停止，并将原始点云送给独立的处理进程。
+TXT 与实时方式均由 `WorkpieceProcessingAdapter` 调用原版 `DataProcessingProcess` 中相同的 `DataFindBlocks` 和 `CabinetTypeRecognizer`，
+输出相同的 `sequence / identifier / status / message` 及配对点云预览，每份整件点云只识别一次。
 
 `DataProcessingProcess` 保留原有结果与处理规则：同一原点使用 `all_data`，不同原点分别处理 `left_data`、`right_data`，各有效分区识别的柜型一致才返回对应 `type`，否则为 0。
 上层适配器将 `type` 转成接口的 `identifier`（0 对应 `None`），添加工件序号、停止控制和配对预览，不修改底层识别方法。原有顶盖开关规则也保留。
-`PlcCommunicationProcess`、`DataProcessWorker` 中采集策略 1、3 及停用运动的原方法入口保留为 `pass`；二开代码不能依赖这些入口执行采集或运动。此处采集策略与 `CONTROL_TYPE=1/2/3` 的调用方式相互独立。
+`PlcCommunicationProcess` 保留原通信、脉冲换算、链条状态和断线重连逻辑；已删除模块的导入和调用、运动及喷涂相关部分改为 `pass`，原方法入口保留。`PlcAcquisitionAdapter` 在上层接入停止信号和连接状态显示。`DataProcessWorker` 原文件中的方法均保留，主程序通过上层仅选择采集策略 2；二开接入也应沿用该上层入口。此处采集策略与 `CONTROL_TYPE=1/2/3` 的调用方式相互独立。
 
 ### 工作进程
 
@@ -370,8 +371,9 @@ PLC 通信进程 ── pulse_queue ──→ LiDAR 采集进程
 | `control/ControlCenter.py`、`UiState.py` | 控制状态与业务结果读取 |
 | `control/QtUiBridge.py`、`RuntimeStateCollector.py` | 界面信号和状态采集 |
 | `control/QtPipelineRuntime.py` | 进程、队列和资源生命周期编排 |
-| `control/WorkpieceProcessingAdapter.py` | 对接原处理结果、停止信号及点云预览；保持原处理类不变 |
-| `control/DataProcessWorker.py`、`PointCloudFileProcess.py` | TXT 整件读取/识别和只画图加载 |
+| `control/WorkpieceProcessingAdapter.py` | 对接原处理结果、TXT读取的停止信号及点云预览；保持原处理类和TXT读取类不变 |
+| `control/PlcAcquisitionAdapter.py` | 原PLC通信类的上层生命周期、状态反馈和配置路径适配 |
+| `control/DataProcessWorker.py`、`PointCloudFileProcess.py` | TXT 整件读取和只画图加载 |
 | `control/ShutdownCoordinator.py`、`ProcessHealthMonitor.py` | 异步停止和进程健康监测 |
 
 `model` 及采集、PLC 通信、处理、保存等核心进程以编译模块提供，按现有模块路径导入使用。
@@ -405,6 +407,8 @@ bridge.state_changed.connect(on_state_changed)
 
 日志位于安装目录的 `data/logs/`，点云保存在 `data/points/`。
 保存格式、块池和退出等待参数见 `ReadDataConfig.toml`。
+点云文件按方向和采集时间命名，时间精确到秒，例如 `left_20261104_104951.txt`。同方向在同一秒发生重名时会拒绝覆盖并提示保存错误。
+
 成功落盘的工件文件清单使用 `.complete.json`；带 `incomplete` 标记或缺少完成清单的数据不能视为完整保存的工件。
 
 | 现象 | 检查项 |

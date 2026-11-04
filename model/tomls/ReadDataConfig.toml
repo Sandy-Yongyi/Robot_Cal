@@ -14,22 +14,22 @@
 # -----------------------------------------------------------------------------
 
 # 所有方向采用同一原点时的整体滤波范围
-combined_x_min = 1030
-combined_x_max = 2450
-combined_y_min = 1060
-combined_y_max = 3000
+combined_x_min = 1150
+combined_x_max = 2500
+combined_y_min = 1100
+combined_y_max = 3200
 
 # 左侧激光滤波范围
-left_x_min = 1030
-left_x_max = 1860
-left_y_min = 1060
-left_y_max = 3000
+left_x_min = 1150
+left_x_max = 2500
+left_y_min = 1100
+left_y_max = 3200
 
 # 右侧激光滤波范围
-right_x_min = 1080
-right_x_max = 1880
-right_y_min = 1060
-right_y_max = 3000
+right_x_min = 1150
+right_x_max = 2500
+right_y_min = 1100
+right_y_max = 3200
 
 # 左上侧激光滤波范围
 left_upper_x_min = -700
@@ -76,7 +76,7 @@ max_scan_length = 10000                  # 超过该扫描长度时自动结束�
 # -----------------------------------------------------------------------------
 plc_send_max_retries = 1                 # PLC 数据发送最大重试次数
 max_pulse = 160000                       # PLC 脉冲最大值，超过后重置为 0
-pulse_to_mm = 1                          # 脉冲转毫米系数；本项目使用激光轴毫米位置，系数为1
+pulse_to_mm = 12.4                          # 脉冲转毫米系数；本项目使用激光轴毫米位置，系数为1
 fifo_unit_mm = 2                         # FIFO 每递增 1 对应的链条距离，单位 mm
 diff_start_pulse = 1                     # 连续帧脉冲极差超过该值时，判定链条开始运动
 

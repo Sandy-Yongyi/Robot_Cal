@@ -40,6 +40,7 @@ class ControlCenter:
         self._send_control = send_control
         self._async_stop = async_stop
         self._stop_results = SimpleQueue()
+        self._match_results = SimpleQueue()
         self._startup_failed = False
         self._local_alarms: tuple[str, ...] = ()
         self._shutdown = ShutdownCoordinator(self._runtime.stop_pipeline, self._stop_results.put) if async_stop else None
@@ -117,8 +118,7 @@ class ControlCenter:
         self._local_alarms = tuple(dict.fromkeys(self._local_alarms + tuple(map(str, errors))))
         status = "停止失败" if live_workers else ("启动失败" if self._startup_failed else ("停止完成" if not errors else "停止完成（有告警）"))
         self._state = self._replace_state(stopping=live_workers, chain_status=status, alarms=tuple(dict.fromkeys(self._state.alarms + self._local_alarms)))
-        if not live_workers:
-            self._state = self._replace_state(points=None, boxes=None, task=TaskState())
+        # Keep the last complete workpiece visible until the next result or window close.
         for error in errors:
             self._state = self._state.with_log(LogEvent(level="ERROR", message=str(error), source="shutdown"))
 
@@ -133,7 +133,10 @@ class ControlCenter:
         if self.stopping:
             return
         data = self._runtime.poll() or {}
-        allowed = {"chain_position", "chain_status", "chain_speed", "points", "boxes", "devices", "task", "alarms"}
+        allowed = {"chain_position", "chain_status", "chain_speed", "points", "boxes", "devices", "task", "alarms",
+                   "matched_id", "workpiece_index", "match_status"}
+        for result in data.get("results", ()):
+            self._match_results.put(result)
         changes = {key: value for key, value in data.items() if key in allowed}
         if "updated" in data:
             if not data["updated"]:
@@ -155,6 +158,14 @@ class ControlCenter:
 
     def build_ui_state(self) -> UiState:
         return self._state
+
+    def take_results(self) -> list[dict]:
+        results = []
+        while True:
+            try:
+                results.append(self._match_results.get_nowait())
+            except Empty:
+                return results
 
     def record_ui_event(self, event: LogEvent) -> None:
         self._state = self._state.with_log(event)

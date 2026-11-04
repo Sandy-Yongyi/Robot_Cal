@@ -67,6 +67,9 @@ class UiState:
     task: TaskState = TaskState()
     alarms: tuple[str, ...] = ()
     logs: tuple[LogEvent, ...] = ()
+    matched_id: int | str | None = None
+    workpiece_index: int = 0
+    match_status: str = "waiting"
 
     @classmethod
     def empty(cls, strategy_name: str) -> "UiState":

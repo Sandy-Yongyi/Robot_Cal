@@ -1,0 +1,78 @@
+# 柜体型号识别配置，单位均为 mm。
+# 匹配规则：
+# 1. outside_bounds_mm 使用外框原始绝对坐标：[x_min, x_max, y_min, y_max, z_min, z_max]
+# 2. inside_bounds_mm 使用内部分区原始绝对坐标：
+#    [in_x_min, in_x_max,
+#     in_y_min, in_y_max,
+#     in_z_min, in_z_max]
+# 3. 内部分区会按空间位置排序后一一比对，不再允许无序尺寸匹配。
+# 4. x/y/z 使用独立精度，不再共用一个 tolerance_mm。
+# 5. jig_bounds_mm 记录挂具 [y_min, y_max, z_min, z_max]，当前识别器不参与匹配。
+# 6. reference_source 为基准数据文件；坐标已按 ReadDataConfig 的原点配置转换。
+
+[matching]
+tolerance_x_mm = 300
+tolerance_y_mm = 200
+tolerance_z_mm = 120
+
+[[cabinet_types]]
+type = 1
+enabled = true
+outside_bounds_mm = [1822, 2541, 1359, 2987, 0, 1648]
+inside_bounds_mm = [[1827, 2541, 1943, 2392, 730, 1280]]
+jig_bounds_mm = [[2987, 3200, 0, 100], [2987, 3200, 1340, 1460], [2987, 3200, 1540, 1620]]
+reference_source = "combined_20261104_104536_567831_57632_2.txt"
+
+[[cabinet_types]]
+type = 2
+enabled = true
+outside_bounds_mm = [1850, 2524, 1178, 2693, 0, 1628]
+inside_bounds_mm = [[1852, 2525, 1658, 2164, 370, 930]]
+jig_bounds_mm = [[2693, 3200, 30, 120], [2693, 3200, 130, 370]]
+reference_source = "combined_20261104_104951_338138_57632_3.txt"
+
+[[cabinet_types]]
+type = 3
+enabled = false
+outside_bounds_mm = [687, 1363, 1590, 2670, 0, 2783]
+inside_bounds_mm = [
+  [765, 1229, 1790, 2549, 80, 520],
+  [714, 1266, 1790, 2059, 670, 1870],
+  [714, 1250, 1790, 2549, 2000, 2670],
+]
+
+[[cabinet_types]]
+type = 4
+enabled = false
+outside_bounds_mm = [697, 1343, 1590, 2665, 0, 2790]
+inside_bounds_mm = [
+  [719, 1262, 1770, 2529, 120, 790],
+  [714, 1269, 1770, 2049, 920, 2090],
+  [742, 1214, 1770, 2529, 2230, 2690],
+]
+
+[[cabinet_types]]
+type = 5
+enabled = false
+outside_bounds_mm = [684, 1345, 1580, 2660, 0, 3444]
+inside_bounds_mm = [
+  [702, 1244, 1780, 2539, 170, 840],
+  [713, 1252, 1780, 2539, 1000, 1440],
+  [704, 1262, 1780, 2059, 1590, 2760],
+  [729, 1205, 1780, 2539, 2910, 3350],
+]
+
+[[cabinet_types]]
+type = 6
+enabled = false
+outside_bounds_mm = [684, 1357, 1579, 2673, 0, 3461]
+inside_bounds_mm = [
+  [734, 1222, 1790, 2549, 130, 580],
+  [714, 1254, 1790, 2069, 740, 1930],
+  [712, 1249, 1790, 2549, 2090, 2530],
+  [704, 1252, 1790, 2549, 2690, 3350],
+]
+
+[[cabinet_types]]
+type = 7
+enabled = false

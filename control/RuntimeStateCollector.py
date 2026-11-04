@@ -54,6 +54,7 @@ class RuntimeStateCollector:
                 snapshot["points"] = data["points"]
                 preview_processed = data.get("preview_processed", False)
             snapshot["boxes"] = data.get("boxes")
+            snapshot["preview_result"] = data.get("match_result")
         points = snapshot["points"]
         if points is not None and not preview_processed and self._preview_voxel_mm > 0:
             snapshot["points"] = self._point_filter.voxelReductionFilter(points, voxel_size=self._preview_voxel_mm)

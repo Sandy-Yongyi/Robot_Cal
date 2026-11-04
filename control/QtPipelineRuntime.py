@@ -1,8 +1,4 @@
-"""wx-free production runtime used by the PyQt6 control center.
-
-It owns the same queues and worker processes as the legacy controller.  Qt
-polls this object through ``ControlCenter`` instead of using wx timers.
-"""
+"""Existing four-process pipeline, wired only for complete-workpiece capture/matching."""
 
 from __future__ import annotations
 
@@ -10,295 +6,267 @@ import multiprocessing
 import os
 import queue
 import time
-from typing import Any
 
-from control.ConfigurationService import ConfigurationService
-from control.LidarAcquisitionProcess import LidarAcquisitionProcess
-from control.PlcCommunicationProcess import PlcCommunicationProcess
+from control.AcquisitionPreviewAdapter import AcquisitionPreviewAdapter as LidarAcquisitionProcess
+from control.PlcAcquisitionAdapter import PlcAcquisitionAdapter as PlcCommunicationProcess
+from control.WorkpieceProcessingAdapter import WorkpieceProcessingAdapter as DataProcessingProcess
+from control.WorkpieceProcessingAdapter import TxtAcquisitionAdapter as DataProcessWorker
+from control.PointCloudFileProcess import PointCloudFileProcess, resolve_txt_files
 from control.RuntimeStateCollector import RuntimeStateCollector
 from control.ProcessHealthMonitor import ProcessHealthMonitor
-from control.PointCloudFileProcess import PointCloudFileProcess, resolve_txt_files
 from control.UiState import DeviceState, TaskState
 from model.dataprocess.DataFilter import DataFilter
 from model.utils.LidarDirectionUtil import get_active_lidar_config
 from model.utils.LoggerUtil import logger, manage_log_files, log_directory
 from model.utils.PointCloudSaveService import PointCloudSaveService, stop_pipeline
-from model.utils.StrategyUtil import is_complete_workpiece_mode, strategy_name_from_code
 from model.utils.TomlLoader import TomlLoader
-from model.utils.MachineConfigUtil import get_machine_config_path
 from model.utils.UiTelemetry import UiStatusPublisher
 
 
 class SubprocessRedirect:
-    def __init__(self, output_queue, is_stderr: bool = False):
-        self.output_queue = output_queue
-        self.is_stderr = is_stderr
-        self._pending = ""
+    def __init__(self, output_queue, is_stderr=False):
+        self.output_queue, self.is_stderr = output_queue, is_stderr
+        self._pending = ''
 
-    def write(self, text: str) -> int:
+    def write(self, text):
         self._pending += text
-        while "\n" in self._pending:
-            line, self._pending = self._pending.split("\n", 1)
+        while '\n' in self._pending:
+            line, self._pending = self._pending.split('\n', 1)
             if line.strip():
-                self.output_queue.put(("stderr" if self.is_stderr else "stdout", line.rstrip("\r")))
+                self.output_queue.put(('stderr' if self.is_stderr else 'stdout', line.rstrip('\r')))
         return len(text)
 
-    def flush(self) -> None:
+    def flush(self):
         if self._pending:
-            self.output_queue.put(("stderr" if self.is_stderr else "stdout", self._pending))
-            self._pending = ""
+            self.output_queue.put(('stderr' if self.is_stderr else 'stdout', self._pending))
+            self._pending = ''
 
 
 class QtPipelineRuntime:
-    """Production mode 2 plus developer TXT/PLC (1) and file-view (3) modes."""
-
-    def __init__(self, config_dir: str | None = None, *, control_type: int = 2,
-                 data_path: str | None = None, data_name: str | None = None):
+    def __init__(self, config_dir=None, *, control_type=2, data_path=None, data_name=None):
         if type(control_type) is not int or control_type not in (1, 2, 3):
-            raise ValueError("control_type 只支持 1/2/3")
+            raise ValueError('control_type 只支持 1/2/3')
         self.control_type = control_type
         self.data_path = os.path.abspath(os.path.expanduser(data_path)) if data_path else None
         self.data_name = data_name
-        self.toml_path = config_dir or os.path.join(os.getcwd(), "model", "tomls")
-        self.mode_config_path = os.path.join(self.toml_path, "ModeConfig.toml")
-        self.configuration_service = ConfigurationService(os.path.join(self.toml_path, "ReadDataConfig.toml"), self.mode_config_path)
-        self.read_data_config = self.configuration_service.load_read_data()
+        self.toml_path = os.path.abspath(config_dir or os.path.join(os.getcwd(), 'model', 'tomls'))
+        self.mode_config_path = os.path.join(self.toml_path, 'ModeConfig.toml')
         self.mode_config = TomlLoader.load(self.mode_config_path)
-        self.sys_config = TomlLoader.load(os.path.join(self.toml_path, "SystemConfig.toml"))
-        self.strategy_name = strategy_name_from_code(self.mode_config.get("strategy_name"))
-        self.chain_speed = int(self.read_data_config.get("lidar_scan_speed", 25))
-        self.process_heartbeat_interval_s = float(self.read_data_config.get("process_heartbeat_interval_s", 1))
-        self.process_unresponsive_timeout_s = float(self.read_data_config.get("process_unresponsive_timeout_s", 60))
+        self._validate_mode(self.mode_config)
+        self.strategy_name = 'complete_workpiece'
+        self.read_data_config = TomlLoader.load(os.path.join(self.toml_path, 'ReadDataConfig.toml'))
+        self.sys_config = TomlLoader.load(os.path.join(self.toml_path, 'SystemConfig.toml'))
+        self.chain_speed = int(self.read_data_config.get('lidar_scan_speed', 25))
+        self.process_heartbeat_interval_s = float(self.read_data_config.get('process_heartbeat_interval_s', 1))
+        self.health_monitor = ProcessHealthMonitor(float(self.read_data_config.get('process_unresponsive_timeout_s', 60)))
         self.control_queue = multiprocessing.Queue()
         self.log_queue = multiprocessing.Queue()
         self.ui_status_queue = multiprocessing.Queue(maxsize=32)
-        self._ui_feedback: dict[str, dict] = {}
-        self.processes: list[Any] = []
-        self.process_heartbeats: dict[Any, Any] = {}
-        self.save_service = None
-        self.lidar_acquisition = None
-        self.plc_handler = None
-        self.data_processor = None
+        self.result_queue = multiprocessing.Queue(maxsize=128)
+        self.collector = RuntimeStateCollector(self.log_queue, DataFilter(), float(self.read_data_config.get('point_cloud_preview_voxel_mm', 10)))
+        self.processes, self.process_heartbeats = [], {}
+        self.save_service = self.lidar_acquisition = self.plc_handler = self.data_processor = None
         self.file_loader = None
+        self._stop_event = None
         self.running = False
-        self._faults: list[str] = []
-        self.filter = DataFilter()
-        self.collector = RuntimeStateCollector(self.log_queue, self.filter, float(self.read_data_config.get("point_cloud_preview_voxel_mm", 10)))
-        self.health_monitor = ProcessHealthMonitor(self.process_unresponsive_timeout_s)
+        self.starting = False
+        self._feedback, self._faults = {}, []
+        self.latest_result = None
+        self._display_result = None
+
+    @staticmethod
+    def _validate_mode(config):
+        if type(config.get('strategy_name')) is not int or config['strategy_name'] != 2:
+            raise ValueError('本版本仅支持 ModeConfig.toml 中 strategy_name = 2')
 
     @staticmethod
     def _heartbeat():
-        return multiprocessing.Value("d", time.monotonic())
+        return multiprocessing.Value('d', time.monotonic())
 
-    def _register(self, process: Any, heartbeat: Any) -> None:
+    def _register_and_start(self, process, heartbeat):
         self.processes.append(process)
         self.process_heartbeats[process] = heartbeat
+        process.stdout = SubprocessRedirect(self.log_queue)
+        process.stderr = SubprocessRedirect(self.log_queue, True)
+        process.daemon = True
+        process.start()
 
-    def start_pipeline(self) -> None:
+    def start_pipeline(self):
         if self.running:
             return
         if self.has_live_workers():
-            raise RuntimeError("仍有工作进程未退出，禁止重新启动")
-        mode_config = TomlLoader.load(self.mode_config_path)
-        configured_strategy = strategy_name_from_code(mode_config.get("strategy_name"))
-        if configured_strategy != self.strategy_name:
-            raise ValueError("运行策略已变更，请重新启动软件后启动设备")
+            raise RuntimeError('仍有工作进程未退出')
+        self._validate_mode(TomlLoader.load(self.mode_config_path))
+        # Validate recognition configuration before opening devices; model code stays untouched.
+        if self.control_type != 3:
+            TomlLoader.load(os.path.join(self.toml_path, 'CabinetTypeConfig.toml'))
+        if self.control_type == 2 and not get_active_lidar_config(self.sys_config):
+            raise ValueError('SystemConfig.toml 至少配置一个激光方向')
         files = resolve_txt_files(self.data_path, self.data_name) if self.control_type in (1, 3) else ()
-        if self.control_type == 1 and self.strategy_name not in ("frame_by_frame", "complete_workpiece"):
-            raise ValueError("TXT 联调目前支持 strategy_name=1/2，不支持策略 3")
-        if self.control_type != 3:
-            machine_path = get_machine_config_path(self.toml_path, self.strategy_name)
-            try:
-                TomlLoader.load(machine_path)
-            except (OSError, ValueError) as exc:
-                raise ValueError(f"设备配置无法加载：{machine_path}；{exc}") from exc
-        self._ui_feedback.clear()
-        self.ui_status_queue = multiprocessing.Queue(maxsize=32)
+        self.starting = True
+        self._feedback.clear()
         self._faults.clear()
-        if self.control_type != 3:
-            manage_log_files(log_directory)
-        self.mode_config = mode_config
-        spray_mode = int(self.mode_config.get("spray_mode", 0) or 0)
-        raw_data_queue = multiprocessing.Queue()
-        pulse_queue = multiprocessing.Queue()
+        self.latest_result = None
+        self._display_result = None
+        self.ui_status_queue = multiprocessing.Queue(maxsize=32)
+        self.result_queue = multiprocessing.Queue(maxsize=128)
+        raw_data_queue = multiprocessing.Queue()  # Original LiDAR puts must not block behind matching/status traffic.
+        pulse_queue = multiprocessing.Queue(maxsize=32)
         viz_queue = multiprocessing.Queue(maxsize=2)
         self.collector.set_visualization_queue(viz_queue)
-        machine_data_queue = None
-        if self.control_type == 1:
-            from control.DataProcessWorker import DataProcessWorker
+        self.running = True
+        try:
+            if self.control_type == 3:
+                heartbeat = self._heartbeat()
+                self.file_loader = PointCloudFileProcess(files, viz_queue, self.ui_status_queue,
+                                                         heartbeat, self.process_heartbeat_interval_s, read_data_config=self.read_data_config)  # type: ignore
+                self._register_and_start(self.file_loader, heartbeat)
+                return
+            manage_log_files(log_directory)
+            self._stop_event = multiprocessing.Event()
+            if self.control_type == 2:
+                self.save_service = PointCloudSaveService.from_config_file(
+                    os.path.join(self.toml_path, 'ReadDataConfig.toml'), os.path.join(os.getcwd(), 'data', 'points'), viz_queue)
+                self.processes.append(self.save_service.worker)
+                self.process_heartbeats[self.save_service.worker] = self.save_service.heartbeat
+                self.save_service.start()
+                self._stop_event = self.save_service.stop_event
+            stop_event = self._stop_event
+            if self.control_type in (1, 2):
+                heartbeat = self._heartbeat()
+                self.data_processor = DataProcessingProcess(raw_data_queue, self.result_queue, viz_queue,
+                                                            config_dir=self.toml_path, heartbeat=heartbeat,
+                                                            heartbeat_interval_s=self.process_heartbeat_interval_s, stop_event=stop_event)
+                self._register_and_start(self.data_processor, heartbeat)
             heartbeat = self._heartbeat()
-            loader = DataProcessWorker(raw_data_queue, pulse_queue, viz_queue, self.data_path,
-                                       data_name=self.data_name, strategy_name=self.strategy_name,
-                                       config_dir=self.toml_path, heartbeat=heartbeat,
-                                       heartbeat_interval_s=self.process_heartbeat_interval_s)
-            if not loader._discover_point_cloud_datasets():
-                raise ValueError("未找到符合原点配置的 TXT 数据集；独立原点请使用 left_/right_ 等方向前缀")
-            self.running = True
-            loader.stdout = SubprocessRedirect(self.log_queue)
-            loader.stderr = SubprocessRedirect(self.log_queue, is_stderr=True)
-            loader.start()
-            self.file_loader = loader
-            self._register(loader, heartbeat)
-        elif self.control_type == 3:
+            self.plc_handler = PlcCommunicationProcess.create(self.strategy_name, raw_data_queue, pulse_queue,
+                                                              self.control_queue, heartbeat=heartbeat, heartbeat_interval_s=self.process_heartbeat_interval_s,
+                                                              config_dir=self.toml_path, stop_event=stop_event)
+            self.plc_handler.ui_status = UiStatusPublisher(self.ui_status_queue, 'plc')
+            self._register_and_start(self.plc_handler, heartbeat)
             heartbeat = self._heartbeat()
-            loader = PointCloudFileProcess(files, viz_queue, self.ui_status_queue, heartbeat,
-                                           self.process_heartbeat_interval_s, read_data_config=self.read_data_config)
-            self.running = True
-            loader.start()
-            self.file_loader = loader
-            self._register(loader, heartbeat)
-            return
-        else:
-            self.running = True
-        if self.control_type == 2 and spray_mode == 0:
-            self.save_service = PointCloudSaveService.from_config_file(
-                os.path.join(self.toml_path, "ReadDataConfig.toml"), os.path.join(os.getcwd(), "data", "points"), viz_queue,
-            )
-            self.save_service.start()
-            self._register(self.save_service.worker, self.save_service.heartbeat)
-            heartbeat = self._heartbeat()
-            self.lidar_acquisition = LidarAcquisitionProcess(
-                pulse_queue=pulse_queue, raw_data_queue=raw_data_queue, viz_queue=viz_queue,
-                lidar_config=get_active_lidar_config(self.sys_config), config_dir=self.toml_path,
-                strategy_name=self.strategy_name, heartbeat=heartbeat,
-                heartbeat_interval_s=self.process_heartbeat_interval_s,
-                save_pool_descriptor=self.save_service.pool.descriptor, save_task_queue=self.save_service.task_queue,
-                save_ack_queue=self.save_service.ack_queue, save_status_queue=self.save_service.status_queue,
-                stop_event=self.save_service.stop_event,
-            )
-            self.lidar_acquisition.daemon = True
-            self.lidar_acquisition.ui_status = UiStatusPublisher(self.ui_status_queue, "lidar")
-            self.lidar_acquisition.stdout = SubprocessRedirect(self.log_queue)
-            self.lidar_acquisition.stderr = SubprocessRedirect(self.log_queue, is_stderr=True)
-            self.lidar_acquisition.start()
-            self._register(self.lidar_acquisition, heartbeat)
-        if is_complete_workpiece_mode(self.strategy_name):
-            from control.DataProcessingProcess import DataProcessingProcess
-            machine_data_queue = multiprocessing.Queue()
-            heartbeat = self._heartbeat()
-            processor = DataProcessingProcess(raw_data_queue, machine_data_queue, viz_queue, self.toml_path, heartbeat, self.process_heartbeat_interval_s)
-            processor.daemon = True
-            processor.stdout = SubprocessRedirect(self.log_queue)
-            processor.stderr = SubprocessRedirect(self.log_queue, is_stderr=True)
-            processor.start()
-            self.data_processor = processor
-            self._register(processor, heartbeat)
-        heartbeat = self._heartbeat()
-        plc = PlcCommunicationProcess.create(
-            strategy_name=self.strategy_name, raw_data_queue=raw_data_queue, pulse_queue=pulse_queue,
-            control_queue=self.control_queue, machine_data_queue=machine_data_queue, heartbeat=heartbeat,
-            heartbeat_interval_s=self.process_heartbeat_interval_s,
-        )
-        plc.daemon = True
-        plc.ui_status = UiStatusPublisher(self.ui_status_queue, "plc")
-        plc.stdout = SubprocessRedirect(self.log_queue)
-        plc.stderr = SubprocessRedirect(self.log_queue, is_stderr=True)
-        plc.start()
-        self.plc_handler = plc
-        self._register(plc, heartbeat)
-        logger.info("PyQt production pipeline started")
+            if self.control_type == 1:
+                self.file_loader = DataProcessWorker(raw_data_queue, pulse_queue, None, self.data_path,
+                                                     data_name=self.data_name, strategy_name=self.strategy_name, config_dir=self.toml_path,
+                                                     heartbeat=heartbeat, heartbeat_interval_s=self.process_heartbeat_interval_s, stop_event=stop_event,
+                                                     result_queue=self.result_queue)
+                if not self.file_loader._discover_point_cloud_datasets():
+                    raise ValueError('未找到符合原点配置的 TXT 数据集')
+                self._register_and_start(self.file_loader, heartbeat)
+            else:
+                self.lidar_acquisition = LidarAcquisitionProcess(pulse_queue, raw_data_queue, viz_queue,
+                                                                 get_active_lidar_config(self.sys_config), self.toml_path, strategy_name=self.strategy_name,
+                                                                 heartbeat=heartbeat, heartbeat_interval_s=self.process_heartbeat_interval_s,
+                                                                 save_pool_descriptor=self.save_service.pool.descriptor, save_task_queue=self.save_service.task_queue,  # type: ignore
+                                                                 save_ack_queue=self.save_service.ack_queue, save_status_queue=self.save_service.status_queue,  # type: ignore
+                                                                 stop_event=stop_event)
+                self.lidar_acquisition.ui_status = UiStatusPublisher(self.ui_status_queue, 'lidar')
+                self._register_and_start(self.lidar_acquisition, heartbeat)
+            logger.info('完整工件采集、匹配与点云保存管线已启动，无运动执行')
+        finally:
+            self.starting = False
 
-    def stop_pipeline(self) -> list[str]:
-        if not self.running and not self.processes and self.save_service is None:
-            return []
+    def stop_pipeline(self):
         self.running = False
-        if self.save_service is not None:
-            self.save_service.stop_event.set()
-        errors = stop_pipeline(
-            list(self.processes), self.lidar_acquisition, self.save_service,
-            float(self.read_data_config.get("point_cloud_acquisition_stop_timeout_s", 15)),
-            float(self.read_data_config.get("point_cloud_save_shutdown_timeout_s", 120)),
-        )
+        if self._stop_event is not None:
+            self._stop_event.set()
+        if not self.processes and self.save_service is None:
+            return []
+        # Preserve original stop order: stop acquisition, drain point-cloud saves, then release pool.
+        started = [process for process in self.processes if process.pid is not None]
+        errors = stop_pipeline(started, self.lidar_acquisition if self.lidar_acquisition is not None and self.lidar_acquisition.pid is not None else None,
+                               self.save_service, float(self.read_data_config.get('point_cloud_acquisition_stop_timeout_s', 15)),  # type: ignore
+                               float(self.read_data_config.get('point_cloud_save_shutdown_timeout_s', 120)))  # type: ignore
         if self.has_live_workers():
-            return list(errors or []) + ["部分进程未退出，共享资源已保留"]
-        self.processes = []
-        self.process_heartbeats = {}
-        self.save_service = None
-        self.lidar_acquisition = None
-        self.plc_handler = None
-        self.data_processor = None
+            return list(errors or []) + ['部分进程未退出，禁止重新启动']
+        self.processes, self.process_heartbeats = [], {}
+        self.save_service = self.lidar_acquisition = self.plc_handler = self.data_processor = None
         self.file_loader = None
-        self._ui_feedback.clear()
+        self._stop_event = None
+        self._feedback.clear()
         self.collector.set_visualization_queue(None)
         return errors
 
-    def has_live_workers(self) -> bool:
-        return any(process.is_alive() for process in self.processes)
+    def has_live_workers(self):
+        return any(process.pid is not None and process.is_alive() for process in self.processes)
 
-    def poll(self) -> dict[str, Any]:
+    def poll(self):
         snapshot = self.collector.poll()
         for _ in range(32):
             try:
                 message = self.ui_status_queue.get_nowait()
             except queue.Empty:
                 break
-            if isinstance(message, dict) and message.get("source") in {"plc", "lidar", "files"}:
-                self._ui_feedback[message["source"]] = message
-        fault = self.health_monitor.check(self.processes, self.process_heartbeats, self.save_service, now=time.monotonic()) if self.running else None
-        if fault is not None:
-            if not self._faults or self._faults[-1] != fault.detail:
-                self._faults.append(fault.detail)
-            snapshot["fault"] = fault.detail
-        snapshot["chain_speed"] = self.chain_speed
-        snapshot["chain_status"] = "运行中" if self.running else "待机"
-        if self.control_type == 3:
-            feedback = self._ui_feedback.get("files", {})
-            detail = feedback.get("detail", "等待导入 TXT 点云" if self.running else "待机")
-            if feedback.get("state") == "error":
-                snapshot["fault"] = detail
-                if detail not in self._faults:
-                    self._faults.append(detail)
-            snapshot["chain_status"] = detail
-            snapshot["task"] = TaskState(name="TXT 点云查看", stage=detail)
-            snapshot["devices"] = tuple(DeviceState(name, False, "文件查看 · 不启用") for name in ("PLC", "激光", "伺服"))
-            snapshot["alarms"] = tuple(self._faults[-10:])
-            return snapshot
+            if isinstance(message, dict):
+                self._feedback[message.get('source')] = message
+        results = []
+        for _ in range(32):
+            try:
+                message = self.result_queue.get_nowait()
+            except queue.Empty:
+                break
+            if isinstance(message, dict):
+                self.latest_result = message
+                results.append(message)
+                if message.get('status') == 'error':
+                    snapshot['fault'] = message.get('message', '数据处理异常')
+        snapshot['results'] = results
+        if self.running and not self.starting:
+            fault = self.health_monitor.check(self.processes, self.process_heartbeats, self.save_service, now=time.monotonic())
+            if fault:
+                snapshot['fault'] = fault.detail
+        devices = []
         now = time.monotonic()
-        def device_feedback(source, worker):
-            feedback = self._ui_feedback.get(source, {})
-            alive = worker is not None and worker.is_alive()
-            fresh = bool(feedback) and 0 <= now - float(feedback.get("timestamp", 0)) <= 5
-            online = bool(alive and fresh and feedback.get("connected"))
-            detail = "通讯正常" if online else ("等待通讯反馈" if alive else "未连接")
-            if alive and fresh and not feedback.get("connected"):
-                detail = "仿真模式" if feedback.get("simulated") else "设备通讯异常"
-            return online, detail
-        plc_online, plc_detail = device_feedback("plc", self.plc_handler)
-        lidar_online, lidar_detail = device_feedback("lidar", self.lidar_acquisition)
-        if self.control_type == 1:
-            lidar_online, lidar_detail = False, "TXT 联调 · 不启用激光"
-        plc_feedback = self._ui_feedback.get("plc", {})
-        feedback_task = plc_feedback.get("task")
-        snapshot["task"] = feedback_task if plc_online and isinstance(feedback_task, TaskState) else TaskState(stage="等待 PLC 任务反馈" if self.running else "待机")
-        if plc_online:
-            snapshot["chain_position"] = int(plc_feedback.get("pulse", 0))
+        for source, name, worker in (('plc', 'PLC', self.plc_handler), ('lidar', '激光', self.lidar_acquisition)):
+            message = self._feedback.get(source, {})
+            fresh = 0 <= now - float(message.get('timestamp', -10)) <= 5
+            alive = worker is not None and worker.pid is not None and worker.is_alive()
+            connected = bool(alive and fresh and message.get('connected'))
+            devices.append(DeviceState(name, connected, '已连接' if connected else ('连接中/等待反馈' if self.running else '未连接')))
+        snapshot.update(devices=tuple(devices), alarms=tuple(self._faults[-10:]),
+                        chain_status='循环采集匹配中' if self.running else '待机')
+        if devices[0].online:
+            feedback = self._feedback.get('plc', {})
+            snapshot['chain_position'] = int(feedback.get('pulse', 0))
             if self.running:
-                motion = plc_feedback.get("motion", "stopped")
-                snapshot["chain_status"] = {"moving_forward": "链条前进", "moving_reverse": "链条后退", "stopped": "链条停止"}.get(motion, "运行中")
-        snapshot["devices"] = (
-            DeviceState("PLC", plc_online, plc_detail),
-            DeviceState("激光", lidar_online, lidar_detail),
-            DeviceState("伺服", False, "就绪状态待确认" if plc_online else "等待 PLC"),
-        )
-        snapshot["alarms"] = tuple(self._faults[-10:])
+                snapshot['chain_status'] = {'moving_forward': '链条前进', 'moving_reverse': '链条后退',
+                                            'stopped': '链条停止'}.get(feedback.get('motion'), '运行中')
+        # GUI ID and cloud share one processing message; result_queue remains the independent SDK channel.
+        if snapshot.get('preview_result') is not None:
+            self._display_result = snapshot['preview_result']
+        elif snapshot.get('updated'):
+            self._display_result = None
+            snapshot.update(matched_id=None, workpiece_index=0, match_status='waiting')
+        if self._display_result:
+            snapshot.update(matched_id=self._display_result.get('identifier'), workpiece_index=self._display_result.get('sequence', 0),
+                            match_status=self._display_result.get('status', 'waiting'))
+        snapshot['task'] = TaskState(name='完整工件采集与匹配', stage=snapshot['chain_status'])
+        if self.control_type == 1:
+            snapshot['devices'] = (devices[0], DeviceState('激光', False, 'TXT 联调 · 不启用激光'))
+            snapshot['chain_status'] = 'TXT 联调 PLC' if self.running else '待机'
+            snapshot['task'] = TaskState(name='TXT 完整工件匹配', stage=snapshot['chain_status'])
+        elif self.control_type == 3:
+            feedback = self._feedback.get('files', {})
+            detail = feedback.get('detail', '等待导入 TXT 点云' if self.running else '待机')
+            snapshot['chain_status'] = detail
+            snapshot['task'] = TaskState(name='TXT 点云查看', stage=detail)
+            snapshot['devices'] = (DeviceState('PLC', False, '文件查看 · 不启用'), DeviceState('激光', False, '文件查看 · 不启用'))
+            if feedback.get('state') == 'error':
+                snapshot['fault'] = detail
+        if snapshot.get('fault') and snapshot['fault'] not in self._faults:
+            self._faults.append(snapshot['fault'])
+        snapshot['alarms'] = tuple(self._faults[-10:])
         return snapshot
 
-    def save_chain_speed(self, speed: int) -> None:
-        if self.control_type == 3:
-            raise RuntimeError("文件查看模式不能修改生产配置")
-        self.configuration_service.save_chain_speed(speed)
-        self.read_data_config["lidar_scan_speed"] = speed
-        self.chain_speed = speed
+    # Legacy upper-layer command entry points remain as no-ops; no model motion path is invoked.
+    def save_chain_speed(self, speed):
+        pass
 
-    def send_control(self, command: dict[str, int]) -> None:
-        if self.control_type == 3:
-            raise RuntimeError("文件查看模式不能发送设备命令")
-        self.control_queue.put(command)
+    def send_control(self, command):
+        pass
 
-    def is_password_required(self) -> bool:
-        if self.control_type == 3:
-            return False
-        return self.configuration_service.is_password_required()
+    def is_password_required(self):
+        return False
 
-    def verify_password(self, password: str) -> bool:
-        return password == self.configuration_service.get_configured_password()
+    def verify_password(self, password):
+        return True

@@ -2,7 +2,9 @@ import os
 import sys
 import numpy as np
 import multiprocessing
+from typing import Any
 from model.dataprocess.complete_workpiece.DataFindBlocks import DataFindBlocks
+from model.dataprocess.complete_workpiece.CabinetTypeRecognizer import CabinetTypeRecognizer
 from model.formats.complete_workpiece.BlockDataFormat import BlockData
 from model.utils.TomlLoader import TomlLoader
 from model.utils.WorkpieceOriginUtil import get_origin_side, transform_points_for_origin
@@ -12,16 +14,17 @@ from model.utils.ProcessHeartbeat import ProcessHeartbeat
 
 
 class DataProcessingProcess(multiprocessing.Process):
-    def __init__(self, raw_data_queue, machine_data_queue, viz_queue=None, config_dir=None,
-                 heartbeat=None, heartbeat_interval_s: float = 1.0):
+    def __init__(self, raw_data_queue, machine_data_queue, viz_queue=None, config_dir=None, top_cover_enabled=None, heartbeat=None, heartbeat_interval_s: float = 1.0):
         super().__init__()
         self.raw_data_queue = raw_data_queue
         self.machine_data_queue = machine_data_queue
         self.viz_queue = viz_queue
+        self.top_cover_enabled = top_cover_enabled
         self.config_dir = config_dir or (os.getcwd() + "\\model\\tomls")
         self._heartbeat = ProcessHeartbeat(heartbeat, heartbeat_interval_s)
         self.process_config = TomlLoader.load(f"{self.config_dir}\\ProcessConfig.toml")
         self.read_data_config = TomlLoader.load(f"{self.config_dir}\\ReadDataConfig.toml")
+        self.cabinet_type_recognizer = self._load_cabinet_type_recognizer()
         self.draw_type = int(self.read_data_config.get("draw_type", 1))
         self.machine_data_queue.put(0)  # 初始状态
         self.shutdown_flag = False
@@ -59,7 +62,8 @@ class DataProcessingProcess(multiprocessing.Process):
         machine_data_queue数据格式：
         [方向1 stop_pulse, 方向1 xyz_data, 方向2 stop_pulse, 方向2 xyz_data, ...]
         """
-        result = {}
+        result: dict[str, Any] = {"type": 0}
+        has_top_cover = self._has_top_cover()
         lidar_status = int(raw_data.get("lidar_status", 0))
         result["lidar_status"] = lidar_status
         translate_data_origin = int(raw_data.get("translate_data_origin", 1 if "all_data" in raw_data else 2) or 2)
@@ -71,6 +75,7 @@ class DataProcessingProcess(multiprocessing.Process):
                 origin_data_dir = 2 if get_origin_side(self.read_data_config) == "right" else 1
                 block_data = self._build_block_data(all_data, lidar_status, data_dir=origin_data_dir, same_origin=True)
                 if isinstance(block_data, BlockData):
+                    result["type"] = self._recognize_cabinet_type(block_data, has_top_cover)
                     self._push_visualization_data(all_data, block_data)
                     target_directions = [
                         direction for direction in sorted(directions)
@@ -82,15 +87,17 @@ class DataProcessingProcess(multiprocessing.Process):
                     default_stop_pulse = raw_data.get("all_stop_pulse", 0)
                     for direction in target_directions:
                         result[direction] = {
-                            "stop_pulse": raw_data.get(f"{direction}_stop_pulse", default_stop_pulse),
+                            "stop_pulse": default_stop_pulse,
                             "data": block_data,
                         }
-
+            if raw_data.get("all_data") is not None:
+                print(f'当前识别柜号：{result["type"]}号柜')
             self.machine_data_queue.put(result)
             logger.info(f"Processed same-origin data sent to PLC queue:{result}")
             return
 
         # 按方向处理
+        recognized_types = []
         for idx, direction in enumerate(sorted(directions), start=1):
             stop_pulse = raw_data.get(f"{direction}_stop_pulse", 0)
             data = raw_data.get(f"{direction}_data")
@@ -98,13 +105,28 @@ class DataProcessingProcess(multiprocessing.Process):
             if self._has_valid_points(data):
                 block_data = self._build_block_data(data, lidar_status, data_dir=idx, same_origin=False)
                 if isinstance(block_data, BlockData):
+                    recognized_types.append(self._recognize_cabinet_type(block_data, has_top_cover))
                     self._push_visualization_data(data, block_data)
                     result[direction] = {"stop_pulse": stop_pulse, "data": block_data}
-                    # time.sleep(30)  # TODO：调试模式下看数据
+
+        if recognized_types and len(set(recognized_types)) == 1:
+            result["type"] = recognized_types[0]
 
         # 发送处理结果
+        if raw_data.get("all_data") is not None:
+            print(f'当前识别柜号：{result["type"]}号柜')
         self.machine_data_queue.put(result)
         logger.info(f"Processed data sent to PLC queue:{result}")
+
+    def _has_top_cover(self) -> bool:
+        if self.top_cover_enabled is None:
+            return False
+        with self.top_cover_enabled.get_lock():
+            return bool(self.top_cover_enabled.value)
+
+    def _recognize_cabinet_type(self, block_data: BlockData, has_top_cover: bool) -> int:
+        cabinet_type = self.cabinet_type_recognizer.recognize(block_data)
+        return cabinet_type + 6 if has_top_cover and cabinet_type > 0 else cabinet_type
 
     @staticmethod
     def _has_valid_points(data):
@@ -123,7 +145,7 @@ class DataProcessingProcess(multiprocessing.Process):
         self._heartbeat.touch(force=True)
         processed = self.data_processor.start_process(process_points, lidar_status, data_dir=1)
         self._heartbeat.touch(force=True)
-        print(f"data_dir: {data_dir}, processed:{processed}")
+        print(f"processed:{processed}")
         if isinstance(processed, BlockData):
             return processed
         return None
@@ -138,12 +160,7 @@ class DataProcessingProcess(multiprocessing.Process):
         if points_array.shape[1] < 3:
             return
 
-        display_points = points_array[:, :3]
-        if int(self.read_data_config.get("translate_data_origin", 1) or 1) == 1:
-            display_points = transform_points_for_origin(
-                display_points,
-                self.read_data_config,
-            )
+        display_points = transform_points_for_origin(points_array[:, :3], self.read_data_config)
 
         viz_data = {
             "points": display_points,
@@ -155,3 +172,12 @@ class DataProcessingProcess(multiprocessing.Process):
             logger.info("Processed block visualization data sent to queue")
         except Exception as e:
             logger.warning(f"Failed to send processed visualization data: {str(e)}")
+
+    def _load_cabinet_type_recognizer(self):
+        config_path = os.path.join(self.config_dir, "CabinetTypeConfig.toml")
+        try:
+            config = TomlLoader.load(config_path)
+        except (OSError, ValueError) as exc:
+            logger.warning(f"Failed to load cabinet type config, all workpieces use type 0: {exc}")
+            config = {}
+        return CabinetTypeRecognizer(config)

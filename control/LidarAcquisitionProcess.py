@@ -295,24 +295,28 @@ class LidarAcquisitionProcess(multiprocessing.Process):
                     direction_frame = same_origin_frame_data
                 else:
                     direction_frame = diff_origin_frame_data
-                self.save_buffer.append(direction, direction_frame)
+                if self.save_buffer is not None:
+                    self.save_buffer.append(direction, direction_frame)
                 if not is_frame_by_frame_mode(self.strategy_name):
                     self._processing_chunks.setdefault(direction, []).append(direction_frame)
 
                 # 添加到当前帧数据
                 current_frame_data = np.vstack((current_frame_data, same_origin_frame_data)) if current_frame_data.size > 0 else same_origin_frame_data
-        if current_frame_data.size > 0:
-            sorted_frame_data = self.data_split.AxisSorting_yx(current_frame_data, self.read_data_config["y_threshold"])
-            if isinstance(sorted_frame_data, np.ndarray) and sorted_frame_data.size > 0:
-                self.save_buffer.append("combined", sorted_frame_data)
-                if not is_frame_by_frame_mode(self.strategy_name):
-                    self._processing_chunks.setdefault("combined", []).append(sorted_frame_data)
-                logger.debug(f"save_valid_data_core - z_value: {z_value}, total accumulated data shape: {len(sorted_frame_data)}")
-        self.save_buffer.poll_acks()
-        low = self.save_buffer.free_blocks <= max(1, self.save_buffer.descriptor["block_count"] // 8)
-        if low and not getattr(self, "_buffer_warning", False):
-            logger.warning(f"Point cloud save buffer low: {self.save_buffer.free_blocks} free blocks")
-        self._buffer_warning = low
+        if self.save_buffer is not None:
+            if current_frame_data.size > 0:
+                sorted_frame_data = self.data_split.AxisSorting_yx(current_frame_data, self.read_data_config["y_threshold"])
+                if isinstance(sorted_frame_data, np.ndarray) and sorted_frame_data.size > 0:
+                    self.save_buffer.append("combined", sorted_frame_data)
+                    if not is_frame_by_frame_mode(self.strategy_name):
+                        self._processing_chunks.setdefault("combined", []).append(sorted_frame_data)
+                    logger.debug(f"save_valid_data_core - z_value: {z_value}, total accumulated data shape: {len(sorted_frame_data)}")
+            self.save_buffer.poll_acks()
+            low = self.save_buffer.free_blocks <= max(1, self.save_buffer.descriptor["block_count"] // 8)
+            if low and not getattr(self, "_buffer_warning", False):
+                logger.warning(f"Point cloud save buffer low: {self.save_buffer.free_blocks} free blocks")
+            self._buffer_warning = low
+        else:
+            logger.warning("Save buffer is None, cannot save data")
 
     def _get_forward_pulse_diff(self, start_pulse: int, current_pulse: int | None = None) -> int:
         """计算脉冲从 start_pulse 向前运行到 current_pulse 的距离，支持回绕。
@@ -748,8 +752,9 @@ class LidarAcquisitionProcess(multiprocessing.Process):
             normalization="absolute_sorted" if is_continuous_bidirectional_mode(self.strategy_name) else "relative_z",
             preview_enabled=not (is_complete_workpiece_mode(self.strategy_name) and getattr(self, "draw_type", 1) == 2),
             preview_origin_config={key: self.read_data_config[key] for key in ("workpiece_origin_side", "workpiece_origin_reference_x") if key in self.read_data_config}
-                if int(self.read_data_config.get("translate_data_origin", 1)) == 1 else None,
+            if int(self.read_data_config.get("translate_data_origin", 1)) == 1 else None,
             z_reset_threshold=self.read_data_config["max_pulse"] / self.read_data_config["pulse_to_mm"])
+        assert self.save_task_queue is not None
         self.save_task_queue.put_nowait(job)
         logger.info(f"Submitted point cloud job {job_id}, channels={list(job['channels'])}, "
                     f"pending={self.save_buffer.pending_jobs}, submit_s={time.perf_counter() - started:.6f}, "

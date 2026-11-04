@@ -19,15 +19,14 @@ def check_configurations(root: Path) -> tuple[CheckResult, ...]:
     results = []
     for name in (
         "ModeConfig.toml", "ReadDataConfig.toml", "SystemConfig.toml", "PlcConfig.toml",
-        "SprayConfig.toml", "ProcessConfig.toml", "LidarConfig.toml",
-        "MachineConfig1.toml", "MachineConfig2.toml", "MachineConfig3.toml",
+        "SprayConfig.toml", "ProcessConfig.toml", "LidarConfig.toml", "CabinetTypeConfig.toml",
     ):
         try:
             from model.utils.TomlLoader import TomlLoader
             config = TomlLoader.load(str(root / "model" / "tomls" / name))
             if name == "ModeConfig.toml":
-                from model.utils.StrategyUtil import strategy_name_from_code
-                strategy_name_from_code(config.get("strategy_name"))
+                if type(config.get("strategy_name")) is not int or config['strategy_name'] != 2:
+                    raise ValueError('本版本只支持 strategy_name = 2')
         except (ImportError, OSError, ValueError) as exc:
             results.append(CheckResult(name, False, str(exc)))
         else:
