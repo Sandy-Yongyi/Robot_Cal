@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from importlib import import_module
 from pathlib import Path
 import sys
+import os
 
 from app_bootstrap import application_directory
 
@@ -39,6 +40,15 @@ def check_windows_plugin(plugin_directory: Path) -> CheckResult:
     return CheckResult("Qt Windows 平台插件", path.is_file(), str(path))
 
 
+
+def check_linux_plugin(plugin_directory: Path, platform: str = "xcb") -> CheckResult:
+    names = {"xcb": "libqxcb.so", "wayland": "libqwayland-generic.so", "offscreen": "libqoffscreen.so"}
+    name = names.get(platform)
+    if name is None:
+        return CheckResult("Qt Linux 平台插件", False, f"不支持的 Qt 平台: {platform}")
+    path = plugin_directory / "platforms" / name
+    return CheckResult("Qt Linux 平台插件", path.is_file(), str(path))
+
 def run_checks(root: Path) -> tuple[CheckResult, ...]:
     results = list(check_configurations(root))
     # Import native libraries to catch missing Python modules and DLL loaders.
@@ -56,10 +66,15 @@ def run_checks(root: Path) -> tuple[CheckResult, ...]:
     try:
         from PyQt6.QtCore import QLibraryInfo
         plugins = Path(QLibraryInfo.path(QLibraryInfo.LibraryPath.PluginsPath))
-        result = check_windows_plugin(plugins) if sys.platform == "win32" else CheckResult(
-            "Qt Windows 平台插件", False, "此部署检查面向 Windows")
+        if sys.platform == "win32":
+            result = check_windows_plugin(plugins)
+        elif sys.platform.startswith("linux"):
+            platform = os.environ.get("QT_QPA_PLATFORM", "xcb").split(":", 1)[0]
+            result = check_linux_plugin(plugins, platform)
+        else:
+            result = CheckResult("Qt 平台插件", False, f"不支持的平台: {sys.platform}")
     except Exception as exc:
-        result = CheckResult("Qt Windows 平台插件", False, str(exc))
+        result = CheckResult("Qt 平台插件", False, str(exc))
     results.append(result)
     return tuple(results)
 

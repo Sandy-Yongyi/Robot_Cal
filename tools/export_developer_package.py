@@ -9,6 +9,12 @@ import hashlib
 import json
 from pathlib import Path
 import shutil
+import sys
+import platform
+try:
+    from tools.linux_compat import linux_source_text
+except ModuleNotFoundError:
+    from linux_compat import linux_source_text
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -57,14 +63,19 @@ def export_package(binary_dir, output_dir, root=ROOT):
     for file in open_files:
         destination = output_dir / file.relative_to(root)
         destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(file, destination)
+        if sys.platform.startswith('linux') and file.relative_to(root).as_posix() == 'control/DataProcessWorker.py':
+            destination.write_text(linux_source_text(file.read_text(encoding='utf-8-sig')), encoding='utf-8')
+        else:
+            shutil.copy2(file, destination)
     for source, relative in binaries:
         destination = output_dir / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, destination)
     built = datetime.now(timezone(timedelta(hours=8)))
     info = {"package_version": built.strftime("%Y%m%d.%H%M%S.%f"),
-            "built_at": built.strftime("%Y-%m-%d %H:%M:%S UTC+08:00")}
+            "built_at": built.strftime("%Y-%m-%d %H:%M:%S UTC+08:00"),
+            "platform": sys.platform, "architecture": platform.machine(),
+            "python_version": platform.python_version()}
     (output_dir / 'package-info.json').write_text(json.dumps(info, ensure_ascii=False, indent=2), encoding='utf-8')
     readme = output_dir / 'README.md'
     content = readme.read_text(encoding='utf-8-sig')

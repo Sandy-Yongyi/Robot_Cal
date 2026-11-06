@@ -29,7 +29,7 @@
 └─ package-manifest.json          交付文件及 SHA-256 摘要
 ```
 
-运行环境为 **Windows x64、CPython 3.11（64 位）**。包内 `.pyd` 必须与 Python 版本和系统架构匹配。
+运行环境为 **Windows x64 或 Ubuntu 24.04 x86-64，CPython 3.11（64 位）**。Windows 包使用 `.pyd`，Linux 包使用 `.so`；扩展模块必须与系统、CPU 架构和 Python 版本匹配。
 底层模块已编译，可直接导入使用；修改界面和公开调用代码无需重新编译底层。
 安装目录需要具备写入权限，运行时会在其中创建 `data/` 目录存放日志和点云。
 
@@ -73,6 +73,21 @@ py -3.11 -m venv .venv
 方式 1/3 必须指定文件或目录，可通过 `main.py` 的 `DATA_PATH` 或 `--data-path` 设置。
 目录数据可用 `DATA_NAME` 或 `--data-name` 筛选。独立原点的数据文件应使用对应方向前缀，例如 `left_`、`right_`。
 方式 2 不使用 TXT 参数。
+
+### Ubuntu 24.04 使用说明
+
+使用针对 Ubuntu 24.04 x86-64、CPython 3.11 构建的 Linux 开发包；Windows 的 `.pyd` 包不能在 Linux 使用。图形界面需要可用的 X11 或 Wayland 桌面、Qt 对应平台插件和 OpenGL。配置文件位于 `model/tomls/`，运行目录需要有写入权限。
+
+```bash
+cd /path/to/developer-sdk-linux
+python3.11 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+python main.py --check-deployment
+python main.py --control-type 2
+```
+
+Windows 和 Linux 包需要分别编译、分别发布；不要混用两个平台的扩展模块。Linux 交付包包含 `.so`，无需访问底层 Python 源码。`.so` 可以提高查看源码的门槛，仍需妥善保管交付包。
 
 ## 2. 界面操作
 

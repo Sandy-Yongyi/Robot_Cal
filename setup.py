@@ -1,13 +1,15 @@
 """Keep the existing Cython build workflow; do not generate files inside model/."""
 
 from pathlib import Path
+import sys
+from tools.linux_compat import prepare_linux_source
 from setuptools import setup, Extension, find_packages
 from Cython.Build import cythonize
 from tools.export_developer_package import protected_modules
 
 
 ROOT = Path(__file__).resolve().parent
-extensions = [Extension(module, [source.relative_to(ROOT).as_posix()])
+extensions = [Extension(module, [(prepare_linux_source(ROOT, source) if sys.platform.startswith("linux") else source).relative_to(ROOT).as_posix()])
               for module, source in protected_modules(ROOT)]
 
 setup(

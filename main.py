@@ -2,6 +2,7 @@ import os
 import sys
 import ctypes
 import multiprocessing
+import tempfile
 from app_bootstrap import prepare_environment
 
 
@@ -16,8 +17,24 @@ def qt_main():
     return run_qt(control_type=CONTROL_TYPE, data_path=DATA_PATH, data_name=DATA_NAME)
 
 
+_linux_lock = None
+
+
 def is_already_running():
     """检查是否已有程序实例在运行"""
+    global _linux_lock
+    if sys.platform.startswith('linux'):
+        import fcntl
+        if _linux_lock is not None:
+            return False
+        lock = open(os.path.join(tempfile.gettempdir(), f'robot-cal-{os.getuid()}.lock'), 'a+')
+        try:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            lock.close()
+            return True
+        _linux_lock = lock
+        return False
     mutex_name = "Global\\MainExeMutex"
 
     try:
@@ -59,12 +76,11 @@ def main():
 
     if is_already_running():
         english = TomlLoader.load(os.path.join(os.getcwd(), "model", "tomls", "ModeConfig.toml")).get("strategy_name") == 3
-        ctypes.windll.user32.MessageBoxW(
-            0,
-            "The software is already running. Do not start another instance." if english else "程序已在运行中，请不要启动多个实例",
-            "Already Running" if english else "错误提示",
-            0x10  # MB_ICONERROR
-        )
+        message = "The software is already running. Do not start another instance." if english else "程序已在运行中，请不要启动多个实例"
+        if sys.platform == 'win32':
+            ctypes.windll.user32.MessageBoxW(0, message, "Already Running" if english else "错误提示", 0x10)
+        else:
+            print(message, file=sys.stderr)
         logger.error("检测到已有实例运行，退出程序")
         sys.exit(1)  # 非零退出码表示异常退出
 
