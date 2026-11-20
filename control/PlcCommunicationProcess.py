@@ -5,9 +5,9 @@ import time
 import multiprocessing
 from typing import Any, cast
 from model.utils.LoggerUtil import check_and_rotate_log, logger
-from model.plc.PlcCommon import PlcManager
+from acquisition_sdk.plc.PlcCommon import PlcManager
 from model.utils.TomlLoader import TomlLoader
-from model.plc.MovingFrameData import ReceiveMovingFrameData, SendMovingFrameData
+from acquisition_sdk.plc.MovingFrameData import ReceiveMovingFrameData
 from model.utils.StrategyUtil import is_complete_workpiece_mode, is_continuous_bidirectional_mode, validate_strategy_name
 from model.utils.MachineConfigUtil import get_machine_config_path, normalize_machine_config_offsets
 from model.utils.ProcessHeartbeat import ProcessHeartbeat

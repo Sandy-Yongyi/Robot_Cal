@@ -3,9 +3,9 @@ import sys
 import numpy as np
 import multiprocessing
 from typing import Any
-from model.dataprocess.complete_workpiece.DataFindBlocks import DataFindBlocks
-from model.dataprocess.complete_workpiece.CabinetTypeRecognizer import CabinetTypeRecognizer
-from model.formats.complete_workpiece.BlockDataFormat import BlockData
+from acquisition_sdk import DataFindBlocks
+from acquisition_sdk import CabinetTypeRecognizer
+from acquisition_sdk._internal.formats.complete_workpiece.BlockDataFormat import BlockData
 from model.utils.TomlLoader import TomlLoader
 from model.utils.WorkpieceOriginUtil import get_origin_side, transform_points_for_origin
 from model.utils.LoggerUtil import logger

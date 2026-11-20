@@ -23,6 +23,7 @@
 ├─ deployment_check.py           环境与配置自检
 ├─ package-info.json             打包版本和时间
 ├─ view/qt/                      界面、主题、点云展示源码
+├─ acquisition_sdk/              共用采集、分区和独立保存模块
 ├─ control/                      上层编排源码及核心进程扩展模块
 ├─ model/                        底层扩展模块
 │  └─ tomls/                     现场参数及型号配置
@@ -252,6 +253,7 @@ if __name__ == '__main__':
     'identifier': 3,
     'status': 'matched',
     'message': '',
+    'distance_from_lidar_cm': 22.0,
 }
 ```
 
@@ -261,8 +263,11 @@ if __name__ == '__main__':
 | `identifier` | 匹配成功时的正整数型号序号，未匹配或异常时为 `None` |
 | `status` | `matched`、`unmatched` 或 `error` |
 | `message` | 未匹配或异常的说明 |
+| `distance_from_lidar_cm` | 处理结束时工件起点距激光的厘米数，无法可靠计算时为 `None` |
 
 序号由 `CabinetTypeRecognizer.recognize()` 根据几何分区结果和 `CabinetTypeConfig.toml` 识别，调用链直接使用识别器返回的序号。
+连续结果还包含 `distance_from_lidar_cm`，表示处理结束时工件起点距激光的厘米数。计算式为 `(点云 Z 最大值（mm）+ 回绕修正后的前进脉冲差 / pulse_to_mm) / 10`。PLC 脉冲失效、重连、位移无法可靠判断或 TXT 回放时，该字段为 `None`。单次采集接口仍返回型号整数。
+
 识别器返回 `0` 时，对外结果为 `unmatched` 和 `identifier=None`。
 独立原点的多个方向分别识别时，若得到不同的非零序号，该工件按未匹配到唯一序号处理。
 
@@ -302,10 +307,10 @@ if __name__ == '__main__':
 ```text
 main.py → qt_main.py
              ├─ view/qt/main_window.py + pages.py   主窗口和实时控制页面
-             ├─ control/QtUiBridge.py              Qt 定时轮询和状态信号
+             ├─ view/qt/QtUiBridge.py              Qt 定时轮询和状态信号
              └─ control/ControlCenter.py           启动、停止、状态和结果读取
                           ↓
-                 control/QtPipelineRuntime.py      工作进程与资源编排
+                 control/PipelineRuntime.py      工作进程与资源编排
 ```
 
 界面显示期间不会自动连接设备。点击启动后，后台启动线程调用控制器，控制器启动工作进程。
@@ -389,12 +394,12 @@ PLC 通信进程 ── pulse_queue ──→ LiDAR 采集进程
 | `qt_main.py` | 界面、控制器及 bridge 的组装 |
 | `acquisition_api.py` | 面向宿主系统的调用封装 |
 | `control/ControlCenter.py`、`UiState.py` | 控制状态与业务结果读取 |
-| `control/QtUiBridge.py`、`RuntimeStateCollector.py` | 界面信号和状态采集 |
-| `control/QtPipelineRuntime.py` | 进程、队列和资源生命周期编排 |
-| `control/WorkpieceProcessingAdapter.py` | 对接原处理结果、TXT读取的停止信号及点云预览；保持原处理类和TXT读取类不变 |
-| `control/PlcAcquisitionAdapter.py` | 原PLC通信类的上层生命周期、状态反馈和配置路径适配 |
-| `control/DataProcessWorker.py`、`PointCloudFileProcess.py` | TXT 整件读取和只画图加载 |
-| `control/ShutdownCoordinator.py`、`ProcessHealthMonitor.py` | 异步停止和进程健康监测 |
+| `view/qt/QtUiBridge.py`、`model/telemetry/RuntimeStateCollector.py` | 界面信号和状态采集 |
+| `control/PipelineRuntime.py` | 进程、队列和资源生命周期编排 |
+| `model/runtime/WorkpieceProcessingAdapter.py` | 对接原处理结果、TXT读取的停止信号及点云预览；保持原处理类和TXT读取类不变 |
+| `model/runtime/PlcAcquisitionAdapter.py` | 原PLC通信类的上层生命周期、状态反馈和配置路径适配 |
+| `control/DataProcessWorker.py`、`acquisition_sdk.PointCloudFileProcess` | TXT 整件读取和只画图加载 |
+| `model/runtime/ShutdownCoordinator.py`、`ProcessHealthMonitor.py` | 异步停止和进程健康监测 |
 
 `model` 及采集、PLC 通信、处理、保存等核心进程以编译模块提供，按现有模块路径导入使用。
 需要改变底层协议或识别算法时，应取得与当前接口兼容的组件更新。

@@ -1,7 +1,6 @@
 import hashlib
 import json
 import unittest
-import subprocess
 from pathlib import Path
 
 
@@ -15,8 +14,8 @@ class ModelPreservationTests(unittest.TestCase):
                 with self.subTest(filename=filename):
                     self.assertEqual(hashlib.sha256(file.read_bytes().replace(b'\r\n', b'\n')).hexdigest(), digest)
 
-    def test_two_lidar_control_files_are_original(self):
+    def test_legacy_acquisition_processes_are_removed(self):
         root = Path(__file__).resolve().parents[1]
-        for name in ('control/LidarAcquisitionProcess.py', 'control/LidarAcquisitionStrategies.py'):
-            original = subprocess.check_output(['git', '-c', 'safe.directory=D:/Code/Robot_Cal', 'show', 'HEAD:' + name], cwd=root)
-            self.assertEqual((root / name).read_text(encoding='utf-8-sig'), original.decode('utf-8-sig').replace('\r\n', '\n'))
+        for name in ('LidarAcquisitionProcess', 'LidarAcquisitionStrategies',
+                     'PointCloudSaveProcess', 'PointCloudFileProcess'):
+            self.assertFalse((root / 'control' / f'{name}.py').exists())

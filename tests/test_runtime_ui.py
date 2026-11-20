@@ -13,9 +13,9 @@ import numpy as np
 from PyQt6.QtWidgets import QApplication, QWidget, QPushButton, QStackedWidget
 from PyQt6.QtGui import QCloseEvent
 
-from control.QtPipelineRuntime import QtPipelineRuntime
+from control.PipelineRuntime import QtPipelineRuntime
 from control.ControlCenter import ControlCenter
-from control.UiState import UiState, DeviceState
+from model.telemetry.UiState import UiState, DeviceState
 from view.qt.main_window import IndustrialMainWindow
 
 
@@ -54,11 +54,11 @@ class DummyCloud(QWidget):
 
 class RuntimeTests(unittest.TestCase):
     def test_wiring_preserves_unbounded_raw_queue_and_processor_owns_preview(self):
-        with patch('control.QtPipelineRuntime.multiprocessing.Queue', side_effect=lambda *a, **kw: queue.Queue(*a, **kw)), \
-             patch('control.QtPipelineRuntime.PointCloudSaveService') as saver, \
-             patch('control.QtPipelineRuntime.DataProcessingProcess') as processor, \
-             patch('control.QtPipelineRuntime.PlcCommunicationProcess'), \
-             patch('control.QtPipelineRuntime.LidarAcquisitionProcess'):
+        with patch('control.PipelineRuntime.multiprocessing.Queue', side_effect=lambda *a, **kw: queue.Queue(*a, **kw)), \
+             patch('control.PipelineRuntime.PointCloudSaveService') as saver, \
+             patch('control.PipelineRuntime.DataProcessingProcess') as processor, \
+             patch('control.PipelineRuntime.PlcCommunicationProcess'), \
+             patch('control.PipelineRuntime.LidarAcquisitionProcess'):
             runtime = QtPipelineRuntime()
             runtime._register_and_start = Mock()
             runtime.start_pipeline()

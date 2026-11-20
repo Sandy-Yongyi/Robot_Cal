@@ -10,8 +10,8 @@ from unittest.mock import Mock, patch
 import numpy as np
 
 from qt_main import parse_launch_arguments
-from control.QtPipelineRuntime import QtPipelineRuntime
-from control.PointCloudFileProcess import load_txt_cloud, resolve_txt_files
+from control.PipelineRuntime import QtPipelineRuntime
+from acquisition_sdk import load_txt_cloud, resolve_txt_files
 from control.DataProcessWorker import DataProcessWorker
 
 
@@ -42,11 +42,11 @@ class ControlModeTests(unittest.TestCase):
         self.assertTrue(loader._discover_point_cloud_datasets())
 
     def test_view_only_starts_only_file_process(self):
-        with patch('control.QtPipelineRuntime.PointCloudFileProcess') as viewer, \
-             patch('control.QtPipelineRuntime.DataProcessingProcess') as processor, \
-             patch('control.QtPipelineRuntime.PlcCommunicationProcess') as plc, \
-             patch('control.QtPipelineRuntime.LidarAcquisitionProcess') as lidar, \
-             patch('control.QtPipelineRuntime.PointCloudSaveService') as saver:
+        with patch('control.PipelineRuntime.PointCloudFileProcess') as viewer, \
+             patch('control.PipelineRuntime.DataProcessingProcess') as processor, \
+             patch('control.PipelineRuntime.PlcCommunicationProcess') as plc, \
+             patch('control.PipelineRuntime.LidarAcquisitionProcess') as lidar, \
+             patch('control.PipelineRuntime.PointCloudSaveService') as saver:
             runtime = QtPipelineRuntime(control_type=3, data_path=str(self.file))
             runtime._register_and_start = Mock()
             runtime.start_pipeline()
@@ -77,11 +77,11 @@ class ControlModeTests(unittest.TestCase):
         self.assertFalse(runtime.has_live_workers())
 
     def test_replay_uses_text_input_and_plc_not_real_lidar(self):
-        with patch('control.QtPipelineRuntime.DataProcessWorker') as replay, \
-             patch('control.QtPipelineRuntime.DataProcessingProcess') as processor, \
-             patch('control.QtPipelineRuntime.PlcCommunicationProcess') as plc, \
-             patch('control.QtPipelineRuntime.LidarAcquisitionProcess') as lidar, \
-             patch('control.QtPipelineRuntime.PointCloudSaveService') as saver:
+        with patch('control.PipelineRuntime.DataProcessWorker') as replay, \
+             patch('control.PipelineRuntime.DataProcessingProcess') as processor, \
+             patch('control.PipelineRuntime.PlcCommunicationProcess') as plc, \
+             patch('control.PipelineRuntime.LidarAcquisitionProcess') as lidar, \
+             patch('control.PipelineRuntime.PointCloudSaveService') as saver:
             runtime = QtPipelineRuntime(control_type=1, data_path=str(self.file))
             runtime._register_and_start = Mock()
             runtime.start_pipeline()
@@ -98,7 +98,7 @@ class ControlModeTests(unittest.TestCase):
         for code in (1, 2, 3):
             for strategy in (1, 3):
                 with self.subTest(code=code, strategy=strategy), \
-                     patch('control.QtPipelineRuntime.TomlLoader.load', return_value={'strategy_name': strategy}):
+                     patch('control.PipelineRuntime.TomlLoader.load', return_value={'strategy_name': strategy}):
                     with self.assertRaises(ValueError):
                         QtPipelineRuntime(control_type=code)
 

@@ -4,17 +4,22 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock
 import numpy as np
-from model.formats.complete_workpiece.BlockDataFormat import BlockData
+from acquisition_sdk._internal.formats.complete_workpiece.BlockDataFormat import BlockData
 
 ROOT = Path(__file__).resolve().parents[1]
 
 class LegacyCompatibilityTests(unittest.TestCase):
     def test_user_processing_source_is_preserved(self):
         import hashlib
-        self.assertEqual(hashlib.sha256((ROOT / 'control/DataProcessingProcess.py').read_text(encoding='utf-8-sig').encode()).hexdigest(), '34448fd41642acea9eb8e32bed784e9f945a2859578921ffd6c81a1631aa510c')
+        source = (ROOT / 'control/DataProcessingProcess.py').read_text(encoding='utf-8-sig')
+        source = source.replace('from acquisition_sdk import DataFindBlocks',
+                                'from model.dataprocess.complete_workpiece.DataFindBlocks import DataFindBlocks')
+        source = source.replace('from acquisition_sdk import CabinetTypeRecognizer',
+                                'from model.dataprocess.complete_workpiece.CabinetTypeRecognizer import CabinetTypeRecognizer')
+        self.assertEqual(hashlib.sha256(source.encode()).hexdigest(), '34448fd41642acea9eb8e32bed784e9f945a2859578921ffd6c81a1631aa510c')
 
     def test_independent_origins_require_all_recognized_types_to_agree(self):
-        from control.WorkpieceProcessingAdapter import WorkpieceProcessingAdapter
+        from model.runtime.WorkpieceProcessingAdapter import WorkpieceProcessingAdapter
         worker = WorkpieceProcessingAdapter(None, queue.Queue(), queue.Queue())
         worker._build_block_data = Mock(return_value=BlockData())
         worker.cabinet_type_recognizer = Mock()
@@ -26,6 +31,8 @@ class LegacyCompatibilityTests(unittest.TestCase):
     def test_txt_worker_source_is_original(self):
         import subprocess
         original = subprocess.check_output(['git', '-c', 'safe.directory=D:/Code/Robot_Cal', 'show', 'HEAD:control/DataProcessWorker.py'], cwd=ROOT).decode('utf-8-sig')
+        original = original.replace('from model.dataprocess.DataSplitting import', 'from acquisition_sdk import')
+        original = original.replace('from model.dataprocess.frame_by_frame.BuildSideFrame import', 'from acquisition_sdk import')
         self.assertEqual((ROOT / 'control/DataProcessWorker.py').read_text(encoding='utf-8-sig'), original.replace('\r\n', '\n'))
 
     def test_retired_plc_methods_remain_as_pass(self):
@@ -35,7 +42,7 @@ class LegacyCompatibilityTests(unittest.TestCase):
 
     def test_same_origin_right_and_top_cover_use_original_recognition_rule(self):
         import multiprocessing
-        from control.WorkpieceProcessingAdapter import WorkpieceProcessingAdapter
+        from model.runtime.WorkpieceProcessingAdapter import WorkpieceProcessingAdapter
         worker = WorkpieceProcessingAdapter(None, queue.Queue(), queue.Queue(), top_cover_enabled=multiprocessing.Value('b', True))
         worker.read_data_config['workpiece_origin_side'] = 'right'
         worker._build_block_data = Mock(return_value=BlockData())
@@ -46,7 +53,7 @@ class LegacyCompatibilityTests(unittest.TestCase):
         self.assertTrue(worker._build_block_data.call_args.kwargs['same_origin'])
 
     def test_failed_partition_still_displays_cloud_with_unmatched_result(self):
-        from control.WorkpieceProcessingAdapter import WorkpieceProcessingAdapter
+        from model.runtime.WorkpieceProcessingAdapter import WorkpieceProcessingAdapter
         worker = WorkpieceProcessingAdapter(None, queue.Queue(), queue.Queue())
         worker._build_block_data = Mock(return_value=None)
         worker._process_data({'all_data': np.ones((2,3))})

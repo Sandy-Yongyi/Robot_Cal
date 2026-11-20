@@ -11,7 +11,7 @@ import main
 class LinuxCompatibilityTests(unittest.TestCase):
     def test_legacy_paths_are_converted_without_mutating_source(self):
         root = Path(__file__).resolve().parents[1]
-        for name in ('model/lidar/LidarCommon.py', 'model/dataprocess/complete_workpiece/DataFindBlocks.py', 'model/utils/LoggerUtil.py', 'control/LidarAcquisitionProcess.py', 'control/DataProcessingProcess.py', 'control/DataProcessWorker.py'):
+        for name in ('acquisition_sdk/_internal/lidar/LidarCommon.py', 'acquisition_sdk/_internal/dataprocess/complete_workpiece/DataFindBlocks.py', 'model/utils/LoggerUtil.py', 'acquisition_sdk/_internal/lidar/LidarAcquisitionProcess.py', 'control/DataProcessingProcess.py', 'control/DataProcessWorker.py'):
             text = (root/name).read_text(encoding='utf-8-sig')
             converted = linux_source_text(text)
             self.assertNotEqual(text, converted, name)
@@ -44,8 +44,8 @@ class LinuxCompatibilityTests(unittest.TestCase):
                 export_package(binaries, output, root)
             worker=(output/'control/DataProcessWorker.py').read_text(encoding='utf-8')
             self.assertIn('{self.config_dir}/ProcessConfig.toml', worker)
-            self.assertFalse((output/'model/lidar/LidarCommon.py').exists())
-            self.assertTrue(any((output/'model/lidar').glob('LidarCommon.*.so')))
+            self.assertFalse((output/'acquisition_sdk/_internal/lidar/LidarCommon.py').exists())
+            self.assertTrue(any((output/'acquisition_sdk/_internal/lidar').glob('LidarCommon.*.so')))
 
     def test_linux_single_instance_retains_lock_and_detects_another_process(self):
         import sys

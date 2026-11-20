@@ -6,10 +6,10 @@ from unittest.mock import Mock
 
 import numpy as np
 
-from control.LidarAcquisitionStrategies import AcquisitionStrategyFactory, CompleteWorkpieceStrategy
-from control.WorkpieceProcessingAdapter import WorkpieceProcessingAdapter as DataProcessingProcess
-from model.formats.complete_workpiece.BlockDataFormat import BlockData, OutsideData
-from model.dataprocess.complete_workpiece.CabinetTypeRecognizer import CabinetTypeRecognizer
+from acquisition_sdk._internal.lidar.LidarAcquisitionStrategies import AcquisitionStrategyFactory, CompleteWorkpieceStrategy
+from model.runtime.WorkpieceProcessingAdapter import WorkpieceProcessingAdapter as DataProcessingProcess
+from acquisition_sdk._internal.formats.complete_workpiece.BlockDataFormat import BlockData, OutsideData
+from acquisition_sdk import CabinetTypeRecognizer
 
 
 class PipelineTests(unittest.TestCase):
@@ -67,3 +67,18 @@ class PipelineTests(unittest.TestCase):
         processor = self.processor()
         processor._process_data({'lidar_status': 0})
         self.assertTrue(processor.result_queue.empty())
+
+
+    def test_continuous_result_includes_distance_with_pulse_wrap(self):
+        import multiprocessing
+        import time
+        processor = self.processor()
+        processor.read_data_config.update(max_pulse=999, pulse_to_mm=2)
+        processor.latest_pulse_sample = multiprocessing.Array('d', [20, 3, time.monotonic()])
+        packet = {'all_data': np.array([[1., 2., 100.], [1., 2., 200.]]),
+                  'capture_end_pulse': 980, 'capture_plc_generation': 3}
+        processor._process_data(packet)
+        self.assertAlmostEqual(processor.result_queue.get_nowait()['distance_from_lidar_cm'], 22.0)
+        packet['capture_plc_generation'] = 2
+        processor._process_data(packet)
+        self.assertIsNone(processor.result_queue.get_nowait()['distance_from_lidar_cm'])

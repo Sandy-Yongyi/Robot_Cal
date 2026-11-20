@@ -9,9 +9,9 @@ from unittest.mock import Mock
 
 import numpy as np
 
-from control.WorkpieceProcessingAdapter import TxtAcquisitionAdapter, WorkpieceProcessingAdapter
-from model.dataprocess.complete_workpiece.CabinetTypeRecognizer import CabinetTypeRecognizer
-from model.formats.complete_workpiece.BlockDataFormat import BlockData, OutsideData
+from model.runtime.WorkpieceProcessingAdapter import TxtAcquisitionAdapter, WorkpieceProcessingAdapter
+from acquisition_sdk import CabinetTypeRecognizer
+from acquisition_sdk._internal.formats.complete_workpiece.BlockDataFormat import BlockData, OutsideData
 
 
 class TxtMatchingTests(unittest.TestCase):
@@ -114,7 +114,7 @@ class TxtMatchingTests(unittest.TestCase):
         np.testing.assert_array_equal(self.preview.get_nowait()['points'], [[7,8,9],[10,11,12]])
 
     def test_live_adapter_runs_as_process_and_stops_without_hardware(self):
-        from control.WorkpieceProcessingAdapter import WorkpieceProcessingAdapter
+        from model.runtime.WorkpieceProcessingAdapter import WorkpieceProcessingAdapter
         raw, results, previews, logs = [multiprocessing.Queue() for _ in range(4)]
         stop = multiprocessing.Event()
         worker = WorkpieceProcessingAdapter(raw, results, previews, stop_event=stop)

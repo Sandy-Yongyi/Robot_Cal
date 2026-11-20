@@ -35,7 +35,7 @@ def build_controller(*, control_type=2, data_path=None, data_name=None) -> Contr
     data_path = str(Path(data_path).expanduser().resolve()) if data_path else None
     prepare_environment()
     from control.ControlCenter import ControlCenter
-    from control.QtPipelineRuntime import QtPipelineRuntime
+    from control.PipelineRuntime import QtPipelineRuntime
 
     runtime = QtPipelineRuntime(control_type=control_type, data_path=data_path, data_name=data_name)
     return ControlCenter(
@@ -52,7 +52,7 @@ def main(*, control_type=2, data_path=None, data_name=None) -> int:
     args = parse_launch_arguments(sys.argv[1:], control_type=control_type, data_path=data_path, data_name=data_name)
     prepare_environment()
     from PyQt6.QtWidgets import QApplication
-    from control.QtUiBridge import QtUiBridge
+    from view.qt.QtUiBridge import QtUiBridge
     from view.qt.main_window import IndustrialMainWindow
 
     app = QApplication.instance() or QApplication(sys.argv)

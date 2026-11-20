@@ -2,7 +2,7 @@ import io
 import multiprocessing
 import queue
 import unittest
-from control.PlcAcquisitionAdapter import PlcAcquisitionAdapter, _StopHeartbeat
+from model.runtime.PlcAcquisitionAdapter import PlcAcquisitionAdapter, _StopHeartbeat
 from model.utils.ProcessHeartbeat import ProcessHeartbeat
 
 

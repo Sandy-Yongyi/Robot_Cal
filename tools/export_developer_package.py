@@ -18,10 +18,7 @@ except ModuleNotFoundError:
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PRIVATE_CONTROL = ('LidarAcquisitionProcess', 'LidarAcquisitionStrategies', 'PlcCommunicationProcess',
-                   'DataProcessingProcess', 'PointCloudSaveProcess')
-
-
+PRIVATE_CONTROL = ('PlcCommunicationProcess', 'DataProcessingProcess')
 def protected_modules(root=ROOT):
     result = []
     for file in sorted((root / 'model').rglob('*.py')):
@@ -29,6 +26,14 @@ def protected_modules(root=ROOT):
             result.append(('.'.join(file.relative_to(root).with_suffix('').parts), file))
     for name in PRIVATE_CONTROL:
         result.append(('control.' + name, root / 'control' / (name + '.py')))
+    sdk = root / 'acquisition_sdk'
+    if not (sdk / 'upstream.json').is_file():
+        raise FileNotFoundError('Run tools/sync_acquisition_sdk.py with the Full_Featured_Edition checkout first')
+    for name in ('CabinetTypeRecognizer', 'AcquisitionPreviewAdapter'):
+        result.append(('acquisition_sdk.' + name, sdk / (name + '.py')))
+    for file in sorted([*(sdk / '_internal').rglob('*.py'), *(sdk / 'plc').glob('*.py')]):
+        if file.name != '__init__.py':
+            result.append(('.'.join(file.relative_to(root).with_suffix('').parts), file))
     return result
 
 
@@ -52,6 +57,8 @@ def export_package(binary_dir, output_dir, root=ROOT):
     open_files += [p for p in (root / 'view').rglob('*.py') if '__pycache__' not in p.parts]
     open_files += [p for p in (root / 'control').glob('*.py') if p.resolve() not in protected_sources]
     open_files += list((root / 'model/tomls').glob('*.toml'))
+    open_files += list((root / 'acquisition_sdk').rglob('__init__.py'))
+    open_files.append(root / 'acquisition_sdk/upstream.json')
     # Model package initializers are empty in this project. Never accidentally export new private code in them.
     for init in (root / 'model').rglob('__init__.py'):
         if init.read_text(encoding='utf-8-sig').strip():

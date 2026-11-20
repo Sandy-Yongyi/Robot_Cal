@@ -33,7 +33,7 @@ class AcquisitionClient:
         if Path.cwd().resolve() != application_directory():
             raise RuntimeError('请先将工作目录切换到软件根目录，再启动原有采集框架')
         if self._runtime is None:
-            from control.QtPipelineRuntime import QtPipelineRuntime
+            from control.PipelineRuntime import QtPipelineRuntime
             self._runtime = QtPipelineRuntime(control_type=2)
         try:
             self._runtime.start_pipeline()

@@ -3,7 +3,7 @@ from __future__ import annotations
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QCheckBox, QComboBox, QFormLayout, QHeaderView, QHBoxLayout, QLabel, QLineEdit, QProgressBar, QScrollArea, QSpinBox, QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
 
-from control.UiState import UiState
+from model.telemetry.UiState import UiState
 from view.qt.point_cloud_view import QtPointCloudView
 from view.qt import theme
 from view.qt.widgets import ControlButton, Panel, StatusBadge, RuntimeLogView
