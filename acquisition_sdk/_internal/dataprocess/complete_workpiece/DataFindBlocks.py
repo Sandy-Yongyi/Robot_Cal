@@ -106,8 +106,6 @@ class DataFindBlocks:
         return work_type
 
     def find_yplane(self, y_groups, z_groups):
-        first_complete_layer = None
-        last_complete_layer = None
         z_range = np.max(self.filtered_data[:, 2]) - np.min(self.filtered_data[:, 2])
 
         x_range = 0
@@ -120,7 +118,6 @@ class DataFindBlocks:
         self.x_max = np.max(self.filtered_data[:, 0])
         self.x_min = np.min(self.filtered_data[:, 0])
         self.x_middle = (self.x_max + self.x_min) / 2
-        self.auto_partition_x_threshold = self._resolve_auto_partition_x_threshold()
 
         y_max_temp = np.max(self.filtered_data[:, 1])
         y_min_temp = np.min(self.filtered_data[:, 1])
@@ -130,28 +127,21 @@ class DataFindBlocks:
         logger.info(f"outside x range: {self.x_max - self.x_min}")
         work_type = self.judge_shape(x_range, y_range, z_range)
         logger.info(f"judge shape work_type is : {work_type}")
+        if work_type == 2:
+            self.auto_partition_x_threshold = self._resolve_auto_partition_x_threshold()
 
         self.fifo_frame_pos = z_range
-        if work_type == 1:  # 平板
+        # 平板和柜体都以最高的完整 Y 层作为挂具检测的基准。
+        for upper_idx in reversed(range(len(y_groups))):
+            if len(y_groups[upper_idx]) > z_range / 10 * self.find_y_plane:
+                y_max = y_groups[upper_idx][0][0][1]
+                y_min = y_groups[0][0][0][1]
+                logger.info(f"upper plane Y : {y_max}, lower plane Y : {y_min}")
+                break
+        else:
             y_max = y_max_temp
             y_min = y_min_temp
-        else:
-            for ii in reversed(range(len(y_groups))):
-                if len(y_groups[ii]) > z_range / 10 * self.find_y_plane:
-                    if first_complete_layer is None:
-                        first_complete_layer = ii
-                last_complete_layer = ii
-            logger.info(f'lower plane idx: {last_complete_layer}, upper plane idx: {first_complete_layer}')
-            if last_complete_layer is not None and first_complete_layer is not None:
-                upper_yplane = y_groups[first_complete_layer]
-                lower_yplane = y_groups[last_complete_layer]
-                y_max = upper_yplane[0][0][1]
-                y_min = lower_yplane[0][0][1]
-                logger.info(f"upper plane Y : {y_max}, lower plane Y : {y_min}")
-            else:
-                y_max = np.max(self.filtered_data[:, 1])
-                y_min = np.min(self.filtered_data[:, 1])
-                logger.info(f"no find upper plane Y, lower plane Y, y_max is: {y_max}, y_min is: {y_min}")
+            logger.info(f"no find upper plane Y, lower plane Y, y_max is: {y_max}, y_min is: {y_min}")
 
         return y_max, y_min, work_type
 

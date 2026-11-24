@@ -219,16 +219,19 @@ if __name__ == '__main__':
         with AcquisitionClient() as client:
             while True:
                 snapshot = client.poll()
-                for result in client.take_results():
-                    if result['status'] == 'matched':
-                        print(result['sequence'], result['identifier'])
-                    elif result['status'] == 'unmatched':
-                        print(result['sequence'], '未匹配')
-                    else:
-                        raise RuntimeError(result['message'])
-
                 if snapshot.get('fault'):
                     raise RuntimeError(snapshot['fault'])
+
+                for result in client.take_results():
+                    if result['status'] == 'error':
+                        raise RuntimeError(result['message'])
+
+                    print(result['sequence'], result['identifier'], result['distance_from_lidar_cm'])
+                    for side, blocks in (result['block_data'] or {}).items():
+                        print(side, '外分区', blocks['outside_data'] or [])
+                        print(side, '内分区', blocks['inside_data'] or [])
+                        print(side, '挂具', blocks['jig_data'] or [])
+
                 time.sleep(.1)
     except KeyboardInterrupt:
         print('已停止')
@@ -253,7 +256,34 @@ if __name__ == '__main__':
     'identifier': 3,
     'status': 'matched',
     'message': '',
-    'distance_from_lidar_cm': 22.0,
+    'distance_from_lidar_cm': 42.0,
+    'block_data': {
+        'all': {
+            'lidar_status': 0,
+            'fifo_frame_pos': 400,
+            'data_dir': 1,
+            'outside_data': [{
+                'outside_x_min': 0, 'outside_x_max': 500,
+                'outside_y_min': 0, 'outside_y_max': 800,
+                'outside_z_min': 0, 'outside_z_max': 400,
+            }],
+            'inside_data': [{
+                'inside_id': 0,
+                'subinside_datalist': [{
+                    'subinside_id': 0,
+                    'subinside_x_min': 0, 'subinside_x_max': 450,
+                    'subinside_y_min': 100, 'subinside_y_max': 350,
+                    'subinside_z_min': 20, 'subinside_z_max': 380,
+                }],
+            }],
+            'jig_data': [{
+                'jig_id': 0,
+                'jig_y_min': 800, 'jig_y_max': 900,
+                'jig_z_min': 150, 'jig_z_max': 220,
+            }],
+            'distribe_gun_list': None,
+        },
+    },
 }
 ```
 
@@ -264,6 +294,9 @@ if __name__ == '__main__':
 | `status` | `matched`、`unmatched` 或 `error` |
 | `message` | 未匹配或异常的说明 |
 | `distance_from_lidar_cm` | 处理结束时工件起点距激光的厘米数，无法可靠计算时为 `None` |
+| `block_data` | 可直接序列化为 JSON 的工件几何。共用原点时取 `all`，独立原点时取有几何数据的 `left`、`right`。没有可用几何或处理异常时为 `None` |
+
+`block_data` 中每份几何包含 `outside_data`（外侧分区）、`inside_data`（内侧分区，其下的 `subinside_datalist` 为子分区）、`jig_data`（挂具）及原有元数据。几何坐标单位为 mm。平板的 `inside_data` 为 `None`。型号未匹配时，只要几何计算成功，仍会返回 `block_data`。
 
 序号由 `CabinetTypeRecognizer.recognize()` 根据几何分区结果和 `CabinetTypeConfig.toml` 识别，调用链直接使用识别器返回的序号。
 连续结果还包含 `distance_from_lidar_cm`，表示处理结束时工件起点距激光的厘米数。计算式为 `(点云 Z 最大值（mm）+ 回绕修正后的前进脉冲差 / pulse_to_mm) / 10`。PLC 脉冲失效、重连、位移无法可靠判断或 TXT 回放时，该字段为 `None`。单次采集接口仍返回型号整数。

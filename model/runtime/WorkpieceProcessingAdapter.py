@@ -1,4 +1,5 @@
 """Upper-layer lifecycle/result adapter around the unchanged workpiece processor."""
+from dataclasses import asdict
 import multiprocessing
 import queue
 import sys
@@ -46,8 +47,9 @@ class WorkpieceProcessingAdapter(DataProcessingProcess):
         identifier = legacy.get('type', 0) or None
         result = {'sequence': self.sequence, 'identifier': identifier,
                   'status': 'matched' if identifier is not None else 'unmatched',
-                  'message': '' if identifier is not None else '未匹配到唯一序号'}
-        result['distance_from_lidar_cm'] = self._distance_from_lidar_cm(raw_data, keys)
+                  'message': '' if identifier is not None else '未匹配到唯一序号',
+                  'distance_from_lidar_cm': self._distance_from_lidar_cm(raw_data, keys),
+                  'block_data': self._serialize_block_data(legacy, same_origin)}
         previewed = {id(points) for points, _ in self._pending_previews}
         for key in keys:
             points = raw_data.get(key)
@@ -56,6 +58,13 @@ class WorkpieceProcessingAdapter(DataProcessingProcess):
         for points, blocks in self._pending_previews:
             self._publish_preview(points, blocks, same_origin=same_origin, result=result)
         self.result_queue.put(result)
+
+    @staticmethod
+    def _serialize_block_data(legacy, same_origin):
+        blocks_by_side = {side: legacy[side]['data'] for side in ('left', 'right') if side in legacy}
+        if same_origin and blocks_by_side:
+            return {'all': asdict(next(iter(blocks_by_side.values())))}
+        return {side: asdict(block) for side, block in blocks_by_side.items()} or None
 
     def _distance_from_lidar_cm(self, raw_data, keys):
         sample = getattr(self, 'latest_pulse_sample', None)
@@ -103,7 +112,8 @@ class WorkpieceProcessingAdapter(DataProcessingProcess):
                 check_and_rotate_log()
         except Exception as exc:
             logger.exception('Workpiece processing failed')
-            self.result_queue.put({'sequence': self.sequence, 'identifier': None, 'status': 'error', 'message': str(exc), 'distance_from_lidar_cm': None})
+            self.result_queue.put({'sequence': self.sequence, 'identifier': None, 'status': 'error',
+                                   'message': str(exc), 'distance_from_lidar_cm': None, 'block_data': None})
 
     def _publish_preview(self, points, block_data, *, same_origin=True, result=None):
         if self.viz_queue is None:
@@ -153,7 +163,8 @@ class TxtAcquisitionAdapter(DataProcessWorker):
             logger.exception('TXT loading failed')
             if self.result_queue is not None:
                 self.result_queue.put({'sequence': 0, 'identifier': None,
-                                       'status': 'error', 'message': str(exc), 'distance_from_lidar_cm': None})
+                                       'status': 'error', 'message': str(exc), 'distance_from_lidar_cm': None,
+                                       'block_data': None})
         finally:
             if self.stop_event.is_set():
                 cancel = getattr(self.machine_data_queue, 'cancel_join_thread', None)

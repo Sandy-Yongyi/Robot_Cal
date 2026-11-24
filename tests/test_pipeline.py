@@ -1,4 +1,5 @@
 import ast
+import json
 import queue
 import unittest
 from pathlib import Path
@@ -8,7 +9,9 @@ import numpy as np
 
 from acquisition_sdk._internal.lidar.LidarAcquisitionStrategies import AcquisitionStrategyFactory, CompleteWorkpieceStrategy
 from model.runtime.WorkpieceProcessingAdapter import WorkpieceProcessingAdapter as DataProcessingProcess
-from acquisition_sdk._internal.formats.complete_workpiece.BlockDataFormat import BlockData, OutsideData
+from acquisition_sdk._internal.formats.complete_workpiece.BlockDataFormat import (
+    BlockData, InsideData, JigData, OutsideData, SubInsideData,
+)
 from acquisition_sdk import CabinetTypeRecognizer
 
 
@@ -52,6 +55,49 @@ class PipelineTests(unittest.TestCase):
         result = processor.result_queue.get_nowait()
         self.assertIsNone(result['identifier'])
         self.assertEqual(result['status'], 'unmatched')
+
+    def test_same_origin_result_contains_serializable_geometry(self):
+        processor = self.processor()
+        processor._build_block_data.return_value = BlockData(
+            fifo_frame_pos=120,
+            outside_data=[OutsideData(outside_x_max=400)],
+            inside_data=[InsideData(inside_id=0, subinside_datalist=[SubInsideData(subinside_y_max=200)])],
+            jig_data=[JigData(jig_y_max=450)],
+        )
+        processor._process_data({'all_data': np.ones((3, 3)), 'right_stop_pulse': 20})
+
+        result = json.loads(json.dumps(processor.result_queue.get_nowait()))
+        self.assertEqual(result['identifier'], 7)
+        self.assertEqual(set(result['block_data']), {'all'})
+        blocks = result['block_data']['all']
+        self.assertEqual(blocks['fifo_frame_pos'], 120)
+        self.assertEqual(blocks['outside_data'][0]['outside_x_max'], 400)
+        self.assertEqual(blocks['inside_data'][0]['subinside_datalist'][0]['subinside_y_max'], 200)
+        self.assertEqual(blocks['jig_data'][0]['jig_y_max'], 450)
+
+    def test_unmatched_independent_origins_report_each_side(self):
+        processor = self.processor()
+        processor._build_block_data.side_effect = [
+            BlockData(outside_data=[OutsideData(outside_x_max=150)]),
+            BlockData(outside_data=[OutsideData(outside_x_max=300)]),
+        ]
+        processor.cabinet_type_recognizer.recognize.side_effect = [7, 8]
+        processor._process_data({'left_data': np.ones((3, 3)), 'right_data': np.ones((3, 3))})
+
+        result = processor.result_queue.get_nowait()
+        self.assertEqual(result['status'], 'unmatched')
+        self.assertIsNone(result['identifier'])
+        self.assertEqual(set(result['block_data']), {'left', 'right'})
+        self.assertEqual(result['block_data']['left']['outside_data'][0]['outside_x_max'], 150)
+        self.assertEqual(result['block_data']['right']['outside_data'][0]['outside_x_max'], 300)
+
+    def test_missing_geometry_has_a_null_block_data_field(self):
+        processor = self.processor()
+        processor._build_block_data.return_value = None
+        processor._process_data({'all_data': np.ones((3, 3))})
+
+        result = processor.result_queue.get_nowait()
+        self.assertIsNone(result['block_data'])
 
     def test_uses_actual_cabinet_recognizer_identifier_unchanged(self):
         processor = self.processor()
