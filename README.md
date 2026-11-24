@@ -90,6 +90,22 @@ python main.py --control-type 2
 
 Windows 和 Linux 包需要分别编译、分别发布；不要混用两个平台的扩展模块。Linux 交付包包含 `.so`，无需访问底层 Python 源码。`.so` 可以提高查看源码的门槛，仍需妥善保管交付包。
 
+#### 从源码重编译 Linux 开发包
+
+在 Ubuntu 中进入源码仓库根目录。首次编译前，准备 CPython 3.11 和本机 C 编译工具链，并把依赖安装到 `~/.venvs/robot-cal`。
+
+```bash
+python3.11 -m venv "$HOME/.venvs/robot-cal"
+"$HOME/.venvs/robot-cal/bin/python" -m pip install -r requirements.txt
+```
+
+后续每次更新源码后，在源码仓库运行 `bash rebuild_linux.sh`。脚本会编译、导出并检查开发包，成功后替换源码仓库根目录的 `developer-sdk-linux.tar.gz`，并把 `~/robot-cal-latest` 指向新版。编译或检查失败时，原归档和固定入口继续可用。
+
+```bash
+cd "$HOME/robot-cal-latest"
+"$HOME/.venvs/robot-cal/bin/python" main.py --control-type 2
+```
+
 ## 2. 界面操作
 
 左侧“实时控制”是主页面，包含点云展示、图层开关、生产控制、设备联锁、当前任务和最近事件。
